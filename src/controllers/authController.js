@@ -170,6 +170,7 @@ async function googleAuth(req, res, next) {
     try {
       identity = await verifyFirebaseIdToken(id_token);
     } catch (fbErr) {
+      logger.warn(`Firebase ID token verification failed: ${fbErr.message}`);
       try {
         const resp = await axios.get(
           `https://oauth2.googleapis.com/tokeninfo?id_token=${id_token}`,
@@ -183,6 +184,7 @@ async function googleAuth(req, res, next) {
           picture: g.picture,
         };
       } catch (err) {
+        logger.warn(`Google tokeninfo fallback failed: ${err.message}`);
         return res
           .status(401)
           .json({ success: false, error: "Invalid Google ID token." });
