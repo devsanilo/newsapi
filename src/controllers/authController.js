@@ -110,6 +110,48 @@ async function login(req, res, next) {
   }
 }
 
+// Firebase ID token verification (Google sign-in via Firebase Auth).
+// Firebase ID tokens are Google-signed JWTs — verified against Google's public JWKS.
+const firebaseJwks = jwksClient({
+  jwksUri: "https://www.googleapis.com/oauth2/v3/certs",
+  cache: true,
+  cacheMaxAge: 86400000, // 24 hours
+});
+
+function getFirebaseSigningKey(header) {
+  return new Promise((resolve, reject) => {
+    firebaseJwks.getSigningKey(header.kid, (err, key) => {
+      if (err) return reject(err);
+      resolve(key.getPublicKey());
+    });
+  });
+}
+
+async function verifyFirebaseIdToken(idToken) {
+  const decoded = jwt.decode(idToken, { complete: true });
+  if (!decoded || !decoded.header || !decoded.header.kid) {
+    throw new Error("Invalid token header");
+  }
+  const publicKey = await getFirebaseSigningKey(decoded.header);
+  const payload = jwt.verify(idToken, publicKey, { algorithms: ["RS256"] });
+
+  const projectId = process.env.FIREBASE_PROJECT_ID;
+  const apiKey = process.env.FIREBASE_WEB_API_KEY;
+  if (projectId && payload.iss !== `https://securetoken.google.com/${projectId}`) {
+    throw new Error("Invalid Firebase issuer");
+  }
+  if (apiKey && payload.aud !== apiKey) {
+    throw new Error("Invalid Firebase audience");
+  }
+  if (!payload.sub) throw new Error("No Firebase subject");
+  return {
+    sub: payload.sub,
+    email: payload.email,
+    name: payload.name || (payload.email || "").split("@")[0],
+    picture: payload.picture || null,
+  };
+}
+
 // ─── Google Sign-In ───────────────────────────────────────────
 
 async function googleAuth(req, res, next) {
@@ -121,21 +163,31 @@ async function googleAuth(req, res, next) {
         .json({ success: false, error: "id_token is required." });
     }
 
-    // Verify Google ID token via Google's tokeninfo endpoint
-    let googleUser;
+    // Verify token — prefer a Firebase Auth ID token, fall back to a raw Google token
+    let identity;
     try {
-      const resp = await axios.get(
-        `https://oauth2.googleapis.com/tokeninfo?id_token=${id_token}`,
-        { timeout: 8000 },
-      );
-      googleUser = resp.data;
-    } catch (err) {
-      return res
-        .status(401)
-        .json({ success: false, error: "Invalid Google ID token." });
+      identity = await verifyFirebaseIdToken(id_token);
+    } catch (fbErr) {
+      try {
+        const resp = await axios.get(
+          `https://oauth2.googleapis.com/tokeninfo?id_token=${id_token}`,
+          { timeout: 8000 },
+        );
+        const g = resp.data;
+        identity = {
+          sub: g.sub,
+          email: g.email,
+          name: g.name,
+          picture: g.picture,
+        };
+      } catch (err) {
+        return res
+          .status(401)
+          .json({ success: false, error: "Invalid Google ID token." });
+      }
     }
 
-    const { sub, email, name, picture } = googleUser;
+    const { sub, email, name, picture } = identity;
     if (!email)
       return res
         .status(400)

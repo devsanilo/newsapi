@@ -22,7 +22,11 @@ function initFirebase() {
       admin.initializeApp({
         credential: admin.credential.cert(serviceAccount),
       });
-    } else if (process.env.FIREBASE_PROJECT_ID) {
+    } else if (
+      process.env.FIREBASE_PROJECT_ID &&
+      process.env.FIREBASE_CLIENT_EMAIL &&
+      process.env.FIREBASE_PRIVATE_KEY
+    ) {
       admin.initializeApp({
         credential: admin.credential.cert({
           projectId: process.env.FIREBASE_PROJECT_ID,
