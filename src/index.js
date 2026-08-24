@@ -23,7 +23,9 @@ const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 
 // ─── Middleware ───────────────────────────────────────────────
-app.use(helmet());
+// crossOriginOpenerPolicy disabled: it breaks Firebase Auth popup
+// detection (logs "Cross-Origin-Opener-Policy would block window.closed")
+app.use(helmet({ crossOriginOpenerPolicy: false }));
 
 app.use(
   cors({
