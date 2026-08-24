@@ -139,6 +139,41 @@ npm run worker
 curl -X POST http://localhost:3000/api/crawler/trigger
 ```
 
+## 🐳 Docker Deployment (Dokploy / Docker Compose)
+
+The repo ships a `Dockerfile` and `docker-compose.yml` that run the **API**, the **crawler worker**, **MySQL 8**, and **Redis** together.
+
+### Deploy to Dokploy
+
+1. Connect your Dokploy application to this repository (deploy from Git).
+2. Dokploy detects `docker-compose.yml` — it builds the image and starts all services.
+3. Set these env vars in the Dokploy app UI (or a `.env` file):
+   - `JWT_SECRET` — **required**, set a long random string
+   - `MYSQL_USER`, `MYSQL_PASSWORD` — non-root database app user (default `noozia` / `noozia_pass`)
+   - `MYSQL_ROOT_PASSWORD` — MySQL root password
+   - `DB_NAME` — database name (default `news_aggregator`)
+   - `REDIS_PASSWORD` — optional Redis password
+   - `API_PORT` — public port to expose (default `3000`)
+   - `CRON_SCHEDULE` — crawl schedule (default `*/30 * * * *`)
+   - Optional: `FOOTBALL_DATA_API_KEY`, `OPENAI_API_KEY`, `SMTP_*`, `VIDEO_FEED_URLS`
+4. Deploy. On first boot the API creates/seeds tables automatically (MySQL + Redis must be healthy first — handled via healthchecks).
+
+### Run locally with Docker Compose
+
+```bash
+cp .env.example .env   # add JWT_SECRET + DB creds
+docker compose up -d --build
+```
+
+Services:
+- `api` → http://localhost:3000 (set `API_PORT` to change)
+- `worker` → processes crawl/scrape jobs from the Bull queue
+- `db` → MySQL 8 (persistent volume `db-data`)
+- `redis` → Redis 7 (persistent volume `redis-data`)
+
+> **Note:** `NODE_ENV=production` uses no DB SSL by default (compose MySQL). If you point the API at a managed DB requiring TLS, set `DB_SSL=true` (and `DB_SSL_CA` if needed).
+
+
 ## 📡 API Endpoints
 
 ### News

@@ -1,0 +1,15 @@
+node_modules
+logs
+*.log
+.git
+.gitignore
+.env
+.env.*
+client
+mobile
+newsapi.db
+*.db
+.DS_Store
+.qodo
+.github
+football-data doc
