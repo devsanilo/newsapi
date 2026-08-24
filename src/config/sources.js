@@ -1,0 +1,203 @@
+/**
+ * News Sources Configuration
+ * Define RSS feeds and HTML scraper configs for each source
+ */
+module.exports = {
+  // ─── RSS Feed Sources ───────────────────────────────────────
+  rssFeeds: [
+    {
+      name: "TechCrunch",
+      source: "techcrunch",
+      category: "technology",
+      url: "https://techcrunch.com/feed/",
+      language: "en",
+    },
+    {
+      name: "ESPN",
+      source: "espn",
+      category: "sports",
+      url: "https://www.espn.com/espn/rss/news",
+      language: "en",
+    },
+    {
+      name: "Al Jazeera",
+      source: "aljazeera",
+      category: "world",
+      url: "https://www.aljazeera.com/xml/rss/all.xml",
+      language: "en",
+    },
+    {
+      name: "CNN Top Stories",
+      source: "cnn",
+      category: "general",
+      url: "http://rss.cnn.com/rss/edition.rss",
+      language: "en",
+    },
+
+    // ─── Football-Specific Sources ──────────────────────────────
+    {
+      name: "90min",
+      source: "90min",
+      category: "sports",
+      url: "https://www.90min.com/posts.rss",
+      language: "en",
+    },
+    {
+      name: "FourFourTwo",
+      source: "fourfourtwo",
+      category: "sports",
+      url: "https://www.fourfourtwo.com/feeds.xml",
+      language: "en",
+    },
+    {
+      name: "Football365",
+      source: "football365",
+      category: "sports",
+      url: "https://www.football365.com/rss",
+      language: "en",
+    },
+    {
+      name: "Sky Sports Football",
+      source: "skysports",
+      category: "sports",
+      url: "https://www.skysports.com/rss/12040",
+      language: "en",
+    },
+    {
+      name: "Guardian Football",
+      source: "guardian",
+      category: "sports",
+      url: "https://www.theguardian.com/football/rss",
+      language: "en",
+    },
+  ],
+
+  // ─── HTML Scraper Configs ───────────────────────────────────
+  scraperConfigs: {
+    bbc: {
+      source: "BBC",
+      baseUrl: "https://www.bbc.com",
+      titleSelector: "h1",
+      contentSelector: "article p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false, // Use Cheerio (static)
+    },
+    reuters: {
+      source: "Reuters",
+      baseUrl: "https://www.reuters.com",
+      titleSelector: 'h1[data-testid="Heading"]',
+      contentSelector: '[data-testid="paragraph-"] p',
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: true, // Use Puppeteer (JS-rendered)
+    },
+    techcrunch: {
+      source: "TechCrunch",
+      baseUrl: "https://techcrunch.com",
+      titleSelector: "h1.article__title",
+      contentSelector: ".article-content p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    cnn: {
+      source: "CNN",
+      baseUrl: "https://www.cnn.com",
+      titleSelector: "h1",
+      contentSelector: ".article__content p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    aljazeera: {
+      source: "Al Jazeera",
+      baseUrl: "https://www.aljazeera.com",
+      titleSelector: "h1",
+      contentSelector: ".wysiwyg p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+
+    // ─── Football Sources ─────────────────────────────────────
+    "90min": {
+      source: "90min",
+      baseUrl: "https://www.90min.com",
+      titleSelector: "h1",
+      contentSelector: "article p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    fourfourtwo: {
+      source: "FourFourTwo",
+      baseUrl: "https://www.fourfourtwo.com",
+      titleSelector: "h1",
+      contentSelector: "#article-body p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    football365: {
+      source: "Football365",
+      baseUrl: "https://www.football365.com",
+      titleSelector: "h1",
+      contentSelector: ".article-body p, .entry-content p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    skysports: {
+      source: "Sky Sports",
+      baseUrl: "https://www.skysports.com",
+      titleSelector: "h1",
+      contentSelector: ".sdc-article-body p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+    guardian: {
+      source: "The Guardian",
+      baseUrl: "https://www.theguardian.com",
+      titleSelector: "h1",
+      contentSelector: ".article-body-commercial-selector p",
+      imageSelector: "meta[property='og:image']",
+      imageAttr: "content",
+      descriptionSelector: "meta[property='og:description']",
+      descriptionAttr: "content",
+      dynamic: false,
+    },
+  },
+
+  // ─── Categories ─────────────────────────────────────────────
+  categories: [
+    "general",
+    "technology",
+    "business",
+    "sports",
+    "entertainment",
+    "health",
+    "science",
+    "world",
+    "politics",
+  ],
+};

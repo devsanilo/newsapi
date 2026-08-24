@@ -1,0 +1,31 @@
+# Dependencies
+node_modules/
+
+# Logs
+logs/
+*.log
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Database
+newsapi.db
+*.sqlite
+*.sqlite3
+
+# Frontend apps (separate projects - not part of the API)
+client/
+mobile/
+
+# Tooling / internal
+.qodo/
+.github/modernize/
+
+# Stray data
+football-data doc
