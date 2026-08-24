@@ -111,9 +111,11 @@ async function login(req, res, next) {
 }
 
 // Firebase ID token verification (Google sign-in via Firebase Auth).
-// Firebase ID tokens are Google-signed JWTs — verified against Google's public JWKS.
+// Firebase ID tokens are signed by the Firebase "securetoken" service account,
+// not the standard Google OAuth2 certs — so we use its dedicated JWKS endpoint.
 const firebaseJwks = jwksClient({
-  jwksUri: "https://www.googleapis.com/oauth2/v3/certs",
+  jwksUri:
+    "https://www.googleapis.com/service_accounts/v1/jwk/securetoken@system.gserviceaccount.com",
   cache: true,
   cacheMaxAge: 86400000, // 24 hours
 });
