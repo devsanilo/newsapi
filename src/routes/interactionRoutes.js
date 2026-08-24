@@ -25,6 +25,10 @@ router.post('/news/:newsId/like', requireAuth, ic.toggleLike);
 // Protected: user's liked articles
 router.get('/likes', requireAuth, ic.getLikedArticles);
 
+// ─── My activity ──────────────────────────────────────────────
+// Protected: articles the user commented on
+router.get('/my/comments', requireAuth, ic.getMyComments);
+
 // ─── Reactions ────────────────────────────────────────────────
 router.get('/news/:newsId/reactions', optionalAuth, ic.getReactions);
 router.post('/news/:newsId/reaction', requireAuth, ic.toggleReaction);

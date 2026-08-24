@@ -7,8 +7,8 @@ const rateLimit = require("express-rate-limit");
 // General API rate limiter
 const apiLimiter = rateLimit({
   windowMs:
-    parseInt(process.env.API_RATE_LIMIT_WINDOW_MS, 10) || 15 * 60 * 1000, // 15 minutes
-  max: parseInt(process.env.API_RATE_LIMIT_MAX, 10) || 1000,
+    parseInt(process.env.API_RATE_LIMIT_WINDOW_MS, 10) || 60 * 1000, // 1 minute
+  max: parseInt(process.env.API_RATE_LIMIT_MAX, 10) || 300,
   standardHeaders: true,
   legacyHeaders: false,
   message: {

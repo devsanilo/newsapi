@@ -401,6 +401,51 @@ class InteractionController {
     }
   }
 
+  /**
+   * GET /api/my/comments  (protected — articles the user commented on)
+   */
+  async getMyComments(req, res, next) {
+    try {
+      const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+      const limit = Math.min(parseInt(req.query.limit, 10) || 20, 100);
+      const offset = (page - 1) * limit;
+
+      const { count, rows } = await Comment.findAndCountAll({
+        where: { user_id: req.user.id },
+        include: [{ model: News, as: 'news' }],
+        order: [['created_at', 'DESC']],
+        distinct: true,
+        limit,
+        offset,
+      });
+
+      // Collapse to one entry per article (latest comment), keep the snippet
+      const byNews = {};
+      for (const c of rows) {
+        if (!c.news) continue;
+        if (byNews[c.news_id]) continue;
+        const article = c.news.toJSON();
+        article.tags = parseTags(article.tags);
+        article.comment_body = c.body;
+        article.comment_created_at = c.created_at;
+        byNews[c.news_id] = article;
+      }
+      const articles = Object.values(byNews);
+      const enriched = await enrichArticles(articles, req.user.id);
+
+      res.json({
+        success: true,
+        data: enriched,
+        pagination: {
+          page, limit, total: count,
+          totalPages: Math.ceil(count / limit),
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   // ═══════════════════════════════════════════════════════════
   //  COLLECTIONS
   // ═══════════════════════════════════════════════════════════
