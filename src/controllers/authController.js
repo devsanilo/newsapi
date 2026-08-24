@@ -140,12 +140,16 @@ async function verifyFirebaseIdToken(idToken) {
   const projectId = process.env.FIREBASE_PROJECT_ID;
   const apiKey = process.env.FIREBASE_WEB_API_KEY;
   const projectNumber = process.env.FIREBASE_PROJECT_NUMBER;
+  const allowedAud = [apiKey, projectNumber, projectId].filter(Boolean);
+
+  logger.info(
+    `Firebase token check: iss=${payload.iss} aud=${payload.aud} allowedAud=${allowedAud.join(",")}`,
+  );
 
   if (projectId && payload.iss !== `https://securetoken.google.com/${projectId}`) {
     throw new Error("Invalid Firebase issuer");
   }
-  // Firebase ID tokens use the project number OR the web API key as audience
-  const allowedAud = [apiKey, projectNumber].filter(Boolean);
+  // Firebase ID tokens use the web API key, project number, or project ID as audience
   if (allowedAud.length > 0 && !allowedAud.includes(payload.aud)) {
     throw new Error("Invalid Firebase audience");
   }
