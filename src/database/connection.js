@@ -55,6 +55,9 @@ async function syncDatabase(options = {}) {
     await sequelize.sync(options);
     logger.info("✅ Database synced successfully.");
 
+    // FULLTEXT index for news search/related (Sequelize can't define FULLTEXT natively)
+    await ensureFullTextIndexes();
+
     // Seed sources from DB seeder
     await seedSourcesIfEmpty();
 
@@ -63,6 +66,31 @@ async function syncDatabase(options = {}) {
   } catch (error) {
     logger.error("❌ Database sync failed:", error.message);
     throw error;
+  }
+}
+
+/**
+ * Ensure the FULLTEXT index on news(title, description) exists.
+ * Required by /api/news/search and /api/news/:id/related (MATCH ... AGAINST).
+ * Sequelize doesn't natively support FULLTEXT indexes, so we create it manually.
+ */
+async function ensureFullTextIndexes() {
+  try {
+    const [[row]] = await sequelize.query(
+      "SELECT COUNT(*) AS cnt FROM information_schema.statistics " +
+        "WHERE table_schema = DATABASE() AND table_name = 'news' " +
+        "AND index_name = 'ft_news_title_description'",
+    );
+    if (Number(row?.cnt || 0) > 0) {
+      logger.info("✅ FULLTEXT index ft_news_title_description already exists.");
+      return;
+    }
+    await sequelize.query(
+      "ALTER TABLE news ADD FULLTEXT INDEX ft_news_title_description (title, description)",
+    );
+    logger.info("✅ Created FULLTEXT index on news(title, description).");
+  } catch (error) {
+    logger.warn("⚠️ Could not create FULLTEXT index:", error.message);
   }
 }
 
