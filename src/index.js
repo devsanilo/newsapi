@@ -22,6 +22,10 @@ const { initFirebase } = require("./services/firebaseService");
 const app = express();
 const PORT = parseInt(process.env.PORT, 10) || 3000;
 
+// Behind a reverse proxy (Dokploy/Traefik) which sets X-Forwarded-For.
+// Without this, express-rate-limit throws ERR_ERL_UNEXPECTED_X_FORWARDED_FOR.
+app.set("trust proxy", 1);
+
 // ─── Middleware ───────────────────────────────────────────────
 // crossOriginOpenerPolicy disabled: it breaks Firebase Auth popup
 // detection (logs "Cross-Origin-Opener-Policy would block window.closed")
