@@ -23,6 +23,7 @@ newsapi.db
 
 # Frontend apps (separate projects - not part of the API)
 client/
+client-next/
 mobile/
 
 # Tooling / internal

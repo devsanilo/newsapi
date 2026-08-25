@@ -14,6 +14,8 @@ const followRoutes = require("./followRoutes");
 const pageRoutes = require("./pageRoutes");
 const rewardRoutes = require("./rewardRoutes");
 const adSettingsRoutes = require("./adSettingsRoutes");
+const settingsRoutes = require("./settingsRoutes");
+const adminRoutes = require("./adminRoutes");
 const leagueRoutes = require("./leagueRoutes");
 const trendingController = require("../controllers/trendingController");
 const streakController = require("../controllers/streakController");
@@ -44,6 +46,8 @@ router.use("/users", followRoutes);
 router.use("/pages", pageRoutes);
 router.use("/rewards", rewardRoutes);
 router.use("/ad-settings", adSettingsRoutes);
+router.use("/settings", settingsRoutes);
+router.use("/admin", adminRoutes);
 router.use("/leagues", leagueRoutes);
 
 // Trending topics & reading streaks

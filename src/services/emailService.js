@@ -1,47 +1,79 @@
 /**
- * Email Service — transactional and digest emails via nodemailer
- * Requires SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS in env
+ * Email Service — transactional and digest emails via nodemailer.
+ * SMTP config is read from the `settings` table (editable in the admin
+ * dashboard) with env vars (SMTP_HOST, SMTP_PORT, SMTP_USER, SMTP_PASS)
+ * as fallback.
  */
 const nodemailer = require("nodemailer");
 const logger = require("../utils/logger");
 
-let transporter = null;
-
-function init() {
-  const host = process.env.SMTP_HOST;
-  if (!host) {
-    logger.warn("SMTP not configured — email service disabled.");
-    return;
+/**
+ * Resolve SMTP config: DB settings first, then env fallback.
+ */
+async function getSmtpConfig() {
+  let db = {};
+  try {
+    const Setting = require("../models/Setting");
+    db = await Setting.getAllSettings();
+  } catch (err) {
+    logger.warn(`emailService: could not read settings: ${err.message}`);
   }
 
-  transporter = nodemailer.createTransport({
-    host,
-    port: parseInt(process.env.SMTP_PORT, 10) || 587,
-    secure: process.env.SMTP_SECURE === "true",
-    auth: {
-      user: process.env.SMTP_USER,
-      pass: process.env.SMTP_PASS,
-    },
-  });
+  const val = (key, envKey, fallback) => {
+    const fromDb = db[key]?.value;
+    if (fromDb !== undefined && fromDb !== "") return fromDb;
+    return process.env[envKey] || fallback;
+  };
 
-  transporter
-    .verify()
-    .then(() => {
-      logger.info("✅ SMTP email transport ready.");
+  const host = val(Setting?.KEYS?.SMTP_HOST || "smtp_host", "SMTP_HOST", "");
+  return {
+    host,
+    port: parseInt(val(Setting?.KEYS?.SMTP_PORT || "smtp_port", "SMTP_PORT", "587"), 10) || 587,
+    secure:
+      val(Setting?.KEYS?.SMTP_SECURE || "smtp_secure", "SMTP_SECURE", "false") === "true",
+    user: val(Setting?.KEYS?.SMTP_USER || "smtp_user", "SMTP_USER", ""),
+    pass: val(Setting?.KEYS?.SMTP_PASS || "smtp_pass", "SMTP_PASS", ""),
+    from:
+      val(Setting?.KEYS?.SMTP_FROM || "smtp_from", "SMTP_FROM", "") ||
+      process.env.SMTP_USER ||
+      "noreply@trenxi.com",
+  };
+}
+
+async function getTransporter() {
+  const cfg = await getSmtpConfig();
+  if (!cfg.host) return null;
+  return nodemailer.createTransport({
+    host: cfg.host,
+    port: cfg.port,
+    secure: cfg.secure,
+    auth: cfg.user ? { user: cfg.user, pass: cfg.pass } : undefined,
+  });
+}
+
+function init() {
+  // Warm check only — no blocking on startup if SMTP missing.
+  getTransporter()
+    .then((t) => {
+      if (!t) {
+        logger.warn("SMTP not configured — email service disabled.");
+        return;
+      }
+      return t.verify();
     })
-    .catch((err) => {
-      logger.warn(`SMTP verification failed: ${err.message}`);
-    });
+    .then(() => logger.info("✅ SMTP email transport ready."))
+    .catch((err) => logger.warn(`SMTP verification failed: ${err.message}`));
 }
 
 async function send({ to, subject, html, text }) {
+  const transporter = await getTransporter();
   if (!transporter) {
     logger.warn("Email skipped — SMTP not configured.");
     return null;
   }
 
-  const from =
-    process.env.SMTP_FROM || process.env.SMTP_USER || "noreply@noozia.app";
+  const cfg = await getSmtpConfig();
+  const from = cfg.from || cfg.user || "noreply@trenxi.com";
 
   try {
     const info = await transporter.sendMail({ from, to, subject, html, text });
@@ -50,6 +82,35 @@ async function send({ to, subject, html, text }) {
   } catch (error) {
     logger.error(`Email send failed: ${error.message}`);
     throw error;
+  }
+}
+
+/**
+ * Send a test email (used by the admin dashboard SMTP tester).
+ * Returns { ok, messageId } or { ok:false, error }.
+ */
+async function sendTest({ to }) {
+  const transporter = await getTransporter();
+  if (!transporter) {
+    return { ok: false, error: "SMTP is not configured. Save SMTP settings first." };
+  }
+  try {
+    const cfg = await getSmtpConfig();
+    const info = await transporter.sendMail({
+      from: cfg.from || cfg.user,
+      to,
+      subject: "Trenxi — Test email ✅",
+      html: `
+        <div style="font-family:-apple-system,BlinkMacSystemFont,sans-serif;max-width:520px;margin:0 auto;">
+          <h2 style="color:#001e56;">Trenxi Admin</h2>
+          <p>Great news — your SMTP settings work! 🎉</p>
+          <p style="color:#555;">This is a test message from the Trenxi admin dashboard. You can now send transactional emails and digests from this server.</p>
+        </div>`,
+    });
+    return { ok: true, messageId: info.messageId };
+  } catch (error) {
+    logger.error(`Test email failed: ${error.message}`);
+    return { ok: false, error: error.message };
   }
 }
 
@@ -88,4 +149,4 @@ function buildDigestHtml(userName, articles) {
   </div>`;
 }
 
-module.exports = { init, send, buildDigestHtml };
+module.exports = { init, send, sendTest, getSmtpConfig, buildDigestHtml };

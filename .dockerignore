@@ -6,6 +6,7 @@ logs
 .env
 .env.*
 client
+client-next
 mobile
 newsapi.db
 *.db
