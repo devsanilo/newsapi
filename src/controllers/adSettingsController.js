@@ -79,6 +79,44 @@ async function getMobileSettings(req, res) {
 }
 
 /**
+ * GET /api/ad-settings/web — public (for web app)
+ * Get AdSense configuration for the website
+ */
+async function getWebSettings(req, res) {
+  try {
+    const adsEnabled = await AdSetting.getValue(
+      AdSetting.KEYS.ADS_ENABLED,
+      "true",
+    );
+
+    if (adsEnabled !== "true") {
+      return res.json({
+        success: true,
+        data: { enabled: false },
+      });
+    }
+
+    const settings = await AdSetting.getAllSettings();
+
+    res.json({
+      success: true,
+      data: {
+        enabled: true,
+        clientId: settings[AdSetting.KEYS.ADSENSE_CLIENT_ID]?.value || "",
+        slots: {
+          banner: settings[AdSetting.KEYS.ADSENSE_SLOT_BANNER]?.value || "",
+          sidebar: settings[AdSetting.KEYS.ADSENSE_SLOT_SIDEBAR]?.value || "",
+          infeed: settings[AdSetting.KEYS.ADSENSE_SLOT_INFEED]?.value || "",
+        },
+      },
+    });
+  } catch (err) {
+    logger.error("getWebSettings error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
  * PUT /api/ad-settings — admin
  * Update ad settings (batch update)
  */
@@ -193,6 +231,7 @@ async function initializeDefaults(req, res) {
 module.exports = {
   getAllSettings,
   getMobileSettings,
+  getWebSettings,
   updateSettings,
   updateSetting,
   deleteSetting,

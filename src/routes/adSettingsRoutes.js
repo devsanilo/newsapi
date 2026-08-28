@@ -7,6 +7,7 @@ const { requireAuth, requireAdmin } = require("../middleware/auth");
 const {
   getAllSettings,
   getMobileSettings,
+  getWebSettings,
   updateSettings,
   updateSetting,
   deleteSetting,
@@ -17,6 +18,9 @@ const router = Router();
 
 // Public — get mobile ad configuration
 router.get("/mobile", getMobileSettings);
+
+// Public — get web (AdSense) configuration
+router.get("/web", getWebSettings);
 
 // Admin — get all settings
 router.get("/", requireAuth, requireAdmin, getAllSettings);
