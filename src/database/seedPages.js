@@ -59,7 +59,8 @@ const defaultPages = [
 <p>We implement industry-standard security measures including encrypted passwords, JWT authentication, and HTTPS to protect your data.</p>
 
 <h2>5. Cookies &amp; Local Storage</h2>
-<p>We use local storage to save your authentication token, theme preference, and reading history for a seamless experience. No third-party tracking cookies are used.</p>
+<p>We use local storage to save your authentication token, theme preference, and reading history for a seamless experience.</p>
+<p><strong>Advertising:</strong> We display advertisements served by Google AdSense, which uses cookies to serve ads based on your prior visits to this and other websites. You can opt out of personalized advertising by visiting <a href="https://adssettings.google.com" target="_blank" rel="noopener">adssettings.google.com</a> or <a href="https://www.aboutads.info" target="_blank" rel="noopener">www.aboutads.info</a>.</p>
 
 <h2>6. Your Rights</h2>
 <p>You can update or delete your account at any time from your Profile settings. You can also request a copy of your data by contacting us.</p>
