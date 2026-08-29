@@ -66,6 +66,19 @@ Setting.KEYS = {
   SEO_KEYWORDS: "seo_keywords",
   SEO_OG_IMAGE: "seo_og_image",
   SEO_TWITTER_HANDLE: "seo_twitter_handle",
+
+  // Social publishing
+  SOCIAL_FB_ENABLED: "social_fb_enabled",
+  SOCIAL_FB_PAGE_ID: "social_fb_page_id",
+  SOCIAL_FB_TOKEN: "social_fb_token",
+  SOCIAL_IG_ENABLED: "social_ig_enabled",
+  SOCIAL_IG_USER_ID: "social_ig_user_id",
+  SOCIAL_IG_TOKEN: "social_ig_token",
+  SOCIAL_X_ENABLED: "social_x_enabled",
+  SOCIAL_X_API_KEY: "social_x_api_key",
+  SOCIAL_X_API_SECRET: "social_x_api_secret",
+  SOCIAL_X_ACCESS_TOKEN: "social_x_access_token",
+  SOCIAL_X_ACCESS_SECRET: "social_x_access_secret",
 };
 
 // Get all settings as an object
@@ -125,6 +138,19 @@ Setting.initializeDefaults = async function () {
     { key: this.KEYS.SEO_KEYWORDS, value: "news, breaking news, trending, sports, world news, daily news", description: "Default meta keywords (comma separated)", category: "seo" },
     { key: this.KEYS.SEO_OG_IMAGE, value: "/logo_main.png", description: "Default Open Graph / share image URL", category: "seo" },
     { key: this.KEYS.SEO_TWITTER_HANDLE, value: "@trenxi", description: "Twitter/X handle for card attribution", category: "seo" },
+
+    // Social publishing
+    { key: this.KEYS.SOCIAL_FB_ENABLED, value: "false", description: "Enable Facebook publishing", category: "social" },
+    { key: this.KEYS.SOCIAL_FB_PAGE_ID, value: "", description: "Facebook Page ID", category: "social" },
+    { key: this.KEYS.SOCIAL_FB_TOKEN, value: "", description: "Facebook long-lived Page access token", category: "social" },
+    { key: this.KEYS.SOCIAL_IG_ENABLED, value: "false", description: "Enable Instagram publishing", category: "social" },
+    { key: this.KEYS.SOCIAL_IG_USER_ID, value: "", description: "Instagram Business account ID", category: "social" },
+    { key: this.KEYS.SOCIAL_IG_TOKEN, value: "", description: "Instagram Graph API long-lived token", category: "social" },
+    { key: this.KEYS.SOCIAL_X_ENABLED, value: "false", description: "Enable X (Twitter) publishing", category: "social" },
+    { key: this.KEYS.SOCIAL_X_API_KEY, value: "", description: "X API key", category: "social" },
+    { key: this.KEYS.SOCIAL_X_API_SECRET, value: "", description: "X API secret", category: "social" },
+    { key: this.KEYS.SOCIAL_X_ACCESS_TOKEN, value: "", description: "X access token", category: "social" },
+    { key: this.KEYS.SOCIAL_X_ACCESS_SECRET, value: "", description: "X access token secret", category: "social" },
   ];
 
   for (const def of defaults) {
