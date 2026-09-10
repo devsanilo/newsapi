@@ -105,7 +105,7 @@ async function getWebSettings(req, res) {
         clientId:
           settings[AdSetting.KEYS.ADSENSE_CLIENT_ID]?.value ||
           process.env.ADSENSE_CLIENT_ID ||
-          "ca-pub-8208734803835173",
+          "ca-pub-8008635097866263",
         slots: {
           banner: settings[AdSetting.KEYS.ADSENSE_SLOT_BANNER]?.value || "",
           sidebar: settings[AdSetting.KEYS.ADSENSE_SLOT_SIDEBAR]?.value || "",
