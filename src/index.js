@@ -9,6 +9,7 @@ const cors = require("cors");
 const helmet = require("helmet");
 const compression = require("compression");
 const morgan = require("morgan");
+const path = require("path");
 
 const routes = require("./routes");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
@@ -51,6 +52,18 @@ app.use(
 );
 
 app.use("/api", apiLimiter);
+
+// ─── Uploaded media (admin uploads) ──────────────────────────
+// cross-origin so crawlers and the web app can load these images
+// (helmet defaults to same-origin and would block them)
+app.use(
+  "/uploads",
+  (req, res, next) => {
+    res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+    next();
+  },
+  express.static(path.join(__dirname, "..", "uploads"), { maxAge: "7d" }),
+);
 
 // ─── Routes ──────────────────────────────────────────────────
 app.use("/api", routes);

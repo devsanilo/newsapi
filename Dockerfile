@@ -57,6 +57,9 @@ COPY . .
 # Runtime log directory
 RUN mkdir -p /app/logs
 
+# Uploaded media (mount a volume here in production for persistence)
+RUN mkdir -p /app/uploads
+
 ENV NODE_ENV=production \
     PUPPETEER_HEADLESS=true
 

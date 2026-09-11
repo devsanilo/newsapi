@@ -21,6 +21,10 @@ newsapi.db
 *.sqlite
 *.sqlite3
 
+# Uploaded media (runtime — keep the folder)
+uploads/*
+!uploads/.gitkeep
+
 # Frontend apps (separate projects - not part of the API)
 client/
 client-next/

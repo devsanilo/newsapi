@@ -4,11 +4,23 @@
 const { Router } = require("express");
 const adminController = require("../controllers/adminController");
 const socialController = require("../controllers/socialController");
+const uploadController = require("../controllers/uploadController");
+const { upload } = require("../middleware/upload");
 const { requireAuth, requireAdmin } = require("../middleware/auth");
 
 const router = Router();
 
 router.use(requireAuth, requireAdmin);
+
+// Image upload (multipart, field name "file")
+router.post("/upload", (req, res, next) => {
+  upload.single("file")(req, res, (err) => {
+    if (err) {
+      return res.status(400).json({ success: false, message: err.message });
+    }
+    next();
+  });
+}, uploadController.uploadImage);
 
 router.get("/users", adminController.getUsers);
 router.patch("/users/:id", adminController.updateUser);
