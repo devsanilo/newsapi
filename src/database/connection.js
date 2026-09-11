@@ -34,6 +34,12 @@ const sequelize = new Sequelize(
 async function testConnection({ attempts = 10, delayMs = 3000 } = {}) {
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     try {
+      if (attempt === 1) {
+        logger.info(
+          `🔄 Connecting to MySQL at ${config.host}:${config.port}/${config.database} ` +
+            `as "${config.username}" (NODE_ENV=${env})`,
+        );
+      }
       await sequelize.authenticate();
       logger.info("✅ MySQL connection established successfully.");
       return;

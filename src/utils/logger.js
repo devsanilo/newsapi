@@ -32,23 +32,37 @@ const logger = winston.createLogger({
   ],
 });
 
-// In development, also log to console with color
-if (process.env.NODE_ENV !== "production") {
-  logger.add(
-    new winston.transports.Console({
-      format: winston.format.combine(
-        winston.format.colorize(),
-        winston.format.printf(
-          ({ timestamp, level, message, service, ...meta }) => {
-            const metaStr = Object.keys(meta).length
-              ? ` ${JSON.stringify(meta)}`
-              : "";
-            return `${timestamp} [${level}] ${message}${metaStr}`;
-          },
-        ),
-      ),
-    }),
-  );
-}
+// Always log to stdout.
+//
+// Container platforms (Dokploy, Docker, Kubernetes) capture the process's
+// stdout/stderr — NOT files inside the container. Without a Console transport
+// a production container emits nothing at all, so a startup crash shows up as
+// an empty log viewer and an unexplained 502.
+logger.add(
+  new winston.transports.Console({
+    format:
+      process.env.NODE_ENV === "production"
+        ? winston.format.combine(
+            winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+            winston.format.errors({ stack: true }),
+            winston.format.printf(({ timestamp, level, message, stack }) =>
+              stack
+                ? `${timestamp} [${level}] ${message}\n${stack}`
+                : `${timestamp} [${level}] ${message}`,
+            ),
+          )
+        : winston.format.combine(
+            winston.format.colorize(),
+            winston.format.printf(
+              ({ timestamp, level, message, service, ...meta }) => {
+                const metaStr = Object.keys(meta).length
+                  ? ` ${JSON.stringify(meta)}`
+                  : "";
+                return `${timestamp} [${level}] ${message}${metaStr}`;
+              },
+            ),
+          ),
+  }),
+);
 
 module.exports = logger;

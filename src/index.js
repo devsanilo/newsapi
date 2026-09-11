@@ -131,6 +131,9 @@ app.use(errorHandler);
 // ─── Server Startup ──────────────────────────────────────────
 async function startServer() {
   try {
+    logger.info(
+      `🚀 Starting Noozia API (NODE_ENV=${process.env.NODE_ENV || "development"}, PORT=${PORT})`,
+    );
     await testConnection();
     await syncDatabase({ alter: false });
 
