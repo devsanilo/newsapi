@@ -25,15 +25,25 @@ const sequelize = new Sequelize(
 );
 
 /**
- * Test the database connection
+ * Test the database connection.
+ *
+ * Retries with a fixed backoff because on a container redeploy the database
+ * container is frequently not accepting connections yet. Exiting on the first
+ * failure would crash-loop the API and leave the reverse proxy returning 502.
  */
-async function testConnection() {
-  try {
-    await sequelize.authenticate();
-    logger.info("✅ MySQL connection established successfully.");
-  } catch (error) {
-    logger.error("❌ Unable to connect to MySQL:", error.message);
-    throw error;
+async function testConnection({ attempts = 10, delayMs = 3000 } = {}) {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    try {
+      await sequelize.authenticate();
+      logger.info("✅ MySQL connection established successfully.");
+      return;
+    } catch (error) {
+      logger.error(
+        `❌ MySQL connection attempt ${attempt}/${attempts} failed: ${error.message}`,
+      );
+      if (attempt === attempts) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
   }
 }
 
@@ -79,6 +89,7 @@ async function syncDatabase(options = {}) {
  */
 async function ensurePageViewColumns() {
   const columns = [
+    ["session_id", "VARCHAR(64) NULL"],
     ["country", "VARCHAR(100) NULL"],
     ["country_code", "CHAR(2) NULL"],
     ["city", "VARCHAR(100) NULL"],

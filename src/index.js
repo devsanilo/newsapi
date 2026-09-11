@@ -143,7 +143,13 @@ async function startServer() {
     // Initialize Firebase (non-blocking — warns if not configured)
     initFirebase();
 
-    await startScheduler();
+    // The crawler scheduler depends on Redis. A failure there must not take
+    // the whole HTTP API down with it.
+    try {
+      await startScheduler();
+    } catch (error) {
+      logger.error(`Scheduler failed to start (API continues): ${error.message}`);
+    }
 
     const shutdown = async (signal) => {
       logger.info(`${signal} received. Shutting down gracefully...`);
