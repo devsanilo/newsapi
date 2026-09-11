@@ -21,6 +21,7 @@ const Page = require("./Page");
 const Reward = require("./Reward");
 const AdSetting = require("./AdSetting");
 const Setting = require("./Setting");
+const PageView = require("./PageView");
 const LeagueStanding = require("./LeagueStanding");
 const Match = require("./Match");
 const TopScorer = require("./TopScorer");

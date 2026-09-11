@@ -156,6 +156,39 @@ async function dailySeries(table, days = 14) {
 }
 
 /**
+ * Daily series of DISTINCT values (e.g. unique visitors per day)
+ * Returns [{ date: 'YYYY-MM-DD', label: 'Mon', count }]
+ */
+async function dailyDistinctSeries(table, column, days = 14) {
+  const start = new Date();
+  start.setHours(0, 0, 0, 0);
+  start.setDate(start.getDate() - (days - 1));
+
+  const [rows] = await sequelize.query(
+    `SELECT DATE(created_at) AS d, COUNT(DISTINCT \`${column}\`) AS cnt
+       FROM \`${table}\`
+      WHERE created_at >= :start
+      GROUP BY DATE(created_at)`,
+    { replacements: { start } },
+  );
+
+  const map = new Map(rows.map((r) => [String(r.d).slice(0, 10), Number(r.cnt)]));
+
+  const series = [];
+  for (let i = 0; i < days; i++) {
+    const d = new Date(start);
+    d.setDate(start.getDate() + i);
+    const iso = d.toISOString().slice(0, 10);
+    series.push({
+      date: iso,
+      label: d.toLocaleDateString("en-US", { weekday: "short" }),
+      count: map.get(iso) || 0,
+    });
+  }
+  return series;
+}
+
+/**
  * GET /api/admin/analytics — platform analytics
  */
 async function getAnalytics(req, res) {
@@ -197,6 +230,45 @@ async function getAnalytics(req, res) {
       "SELECT reaction_type, COUNT(*) AS cnt FROM news_reactions GROUP BY reaction_type",
     );
 
+    // ─── Web analytics (page views + visits) ──────────────────
+    const since = new Date();
+    since.setHours(0, 0, 0, 0);
+    since.setDate(since.getDate() - (days - 1));
+
+    const [[pvRange]] = await sequelize.query(
+      "SELECT COUNT(*) AS cnt, COUNT(DISTINCT visitor_id) AS uniq FROM page_views WHERE created_at >= :since",
+      { replacements: { since } },
+    );
+    const [[pvAll]] = await sequelize.query(
+      "SELECT COUNT(*) AS cnt, COUNT(DISTINCT visitor_id) AS uniq FROM page_views",
+    );
+    const [topPages] = await sequelize.query(
+      `SELECT path, COUNT(*) AS cnt
+         FROM page_views
+        WHERE created_at >= :since
+        GROUP BY path
+        ORDER BY cnt DESC
+        LIMIT 12`,
+      { replacements: { since } },
+    );
+    const [devices] = await sequelize.query(
+      `SELECT COALESCE(device, 'unknown') AS device, COUNT(*) AS cnt
+         FROM page_views
+        WHERE created_at >= :since
+        GROUP BY device
+        ORDER BY cnt DESC`,
+      { replacements: { since } },
+    );
+    const [referrers] = await sequelize.query(
+      `SELECT COALESCE(NULLIF(referrer, ''), 'Direct') AS ref, COUNT(*) AS cnt
+         FROM page_views
+        WHERE created_at >= :since
+        GROUP BY ref
+        ORDER BY cnt DESC
+        LIMIT 8`,
+      { replacements: { since } },
+    );
+
     res.json({
       success: true,
       data: {
@@ -209,6 +281,10 @@ async function getAnalytics(req, res) {
           reactions: Number(reactionsTotal?.cnt || 0),
           bookmarks: Number(bookmarksTotal?.cnt || 0),
           sources: Number(sourcesTotal?.cnt || 0),
+          pageViews: Number(pvRange?.cnt || 0),
+          visits: Number(pvRange?.uniq || 0),
+          pageViewsAllTime: Number(pvAll?.cnt || 0),
+          visitsAllTime: Number(pvAll?.uniq || 0),
         },
         series: {
           articles: await dailySeries("news", days),
@@ -217,7 +293,21 @@ async function getAnalytics(req, res) {
           comments: await dailySeries("comments", days),
           reactions: await dailySeries("news_reactions", days),
           bookmarks: await dailySeries("bookmarks", days),
+          pageViews: await dailySeries("page_views", days),
+          visits: await dailyDistinctSeries("page_views", "visitor_id", days),
         },
+        topPages: topPages.map((p) => ({
+          path: p.path,
+          views: Number(p.cnt || 0),
+        })),
+        devices: devices.map((d) => ({
+          device: d.device,
+          count: Number(d.cnt || 0),
+        })),
+        referrers: referrers.map((r) => ({
+          referrer: r.ref,
+          count: Number(r.cnt || 0),
+        })),
         topUsers: topUsers.map((u) => ({
           id: u.id,
           name: u.name,

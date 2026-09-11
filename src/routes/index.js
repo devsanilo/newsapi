@@ -16,6 +16,7 @@ const rewardRoutes = require("./rewardRoutes");
 const adSettingsRoutes = require("./adSettingsRoutes");
 const settingsRoutes = require("./settingsRoutes");
 const adminRoutes = require("./adminRoutes");
+const analyticsRoutes = require("./analyticsRoutes");
 const leagueRoutes = require("./leagueRoutes");
 const trendingController = require("../controllers/trendingController");
 const streakController = require("../controllers/streakController");
@@ -48,6 +49,7 @@ router.use("/rewards", rewardRoutes);
 router.use("/ad-settings", adSettingsRoutes);
 router.use("/settings", settingsRoutes);
 router.use("/admin", adminRoutes);
+router.use("/analytics", analyticsRoutes);
 router.use("/leagues", leagueRoutes);
 
 // Trending topics & reading streaks
