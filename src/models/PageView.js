@@ -36,6 +36,31 @@ PageView.init(
       allowNull: true,
       comment: "mobile | tablet | desktop",
     },
+    browser: {
+      type: DataTypes.STRING(40),
+      allowNull: true,
+    },
+    os: {
+      type: DataTypes.STRING(40),
+      allowNull: true,
+    },
+    language: {
+      type: DataTypes.STRING(20),
+      allowNull: true,
+      comment: "Primary language from Accept-Language",
+    },
+    country: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+    },
+    country_code: {
+      type: DataTypes.CHAR(2),
+      allowNull: true,
+    },
+    city: {
+      type: DataTypes.STRING(100),
+      allowNull: true,
+    },
     user_agent: {
       type: DataTypes.STRING(300),
       allowNull: true,
@@ -58,6 +83,8 @@ PageView.init(
       { name: "idx_page_views_created_at", fields: ["created_at"] },
       { name: "idx_page_views_path", fields: ["path"] },
       { name: "idx_page_views_visitor", fields: ["visitor_id"] },
+      { name: "idx_page_views_session", fields: ["session_id"] },
+      { name: "idx_page_views_country", fields: ["country_code"] },
     ],
   },
 );

@@ -189,6 +189,210 @@ async function dailyDistinctSeries(table, column, days = 14) {
 }
 
 /**
+ * Deep web analytics for a date range (page views, visits, behaviour,
+ * geography, technology, top pages/articles, traffic sources).
+ */
+async function webAnalytics(days) {
+  const since = new Date();
+  since.setHours(0, 0, 0, 0);
+  since.setDate(since.getDate() - (days - 1));
+  const rep = { replacements: { since } };
+
+  const [[totalsRow]] = await sequelize.query(
+    `SELECT COUNT(*) AS views,
+            COUNT(DISTINCT visitor_id) AS visitors,
+            COUNT(DISTINCT session_id) AS sessions
+       FROM page_views WHERE created_at >= :since`,
+    rep,
+  );
+
+  const [[allTime]] = await sequelize.query(
+    "SELECT COUNT(*) AS views, COUNT(DISTINCT visitor_id) AS visitors FROM page_views",
+  );
+
+  // Bounce rate + average session duration
+  const [[sessionStats]] = await sequelize.query(
+    `SELECT COUNT(*) AS sessions,
+            SUM(CASE WHEN c = 1 THEN 1 ELSE 0 END) AS bounced,
+            AVG(dur) AS avg_duration
+       FROM (
+         SELECT session_id,
+                COUNT(*) AS c,
+                TIMESTAMPDIFF(SECOND, MIN(created_at), MAX(created_at)) AS dur
+           FROM page_views
+          WHERE created_at >= :since AND session_id IS NOT NULL
+          GROUP BY session_id
+       ) s`,
+    rep,
+  );
+
+  // New vs returning visitors
+  const [[visitorMix]] = await sequelize.query(
+    `SELECT
+        SUM(CASE WHEN first_seen >= :since THEN 1 ELSE 0 END) AS new_visitors,
+        SUM(CASE WHEN first_seen < :since THEN 1 ELSE 0 END) AS returning_visitors
+       FROM (
+         SELECT visitor_id, MIN(created_at) AS first_seen
+           FROM page_views
+          WHERE visitor_id IS NOT NULL
+          GROUP BY visitor_id
+         HAVING MAX(created_at) >= :since
+       ) v`,
+    rep,
+  );
+
+  const [topPages] = await sequelize.query(
+    `SELECT path,
+            COUNT(*) AS views,
+            COUNT(DISTINCT visitor_id) AS visitors
+       FROM page_views
+      WHERE created_at >= :since
+      GROUP BY path
+      ORDER BY views DESC
+      LIMIT 25`,
+    rep,
+  );
+
+  // Top performing articles (resolved to real titles)
+  const [topArticles] = await sequelize.query(
+    `SELECT pv.path,
+            COUNT(*) AS views,
+            COUNT(DISTINCT pv.visitor_id) AS visitors,
+            n.title, n.source, n.category
+       FROM page_views pv
+       JOIN news n ON pv.path = CONCAT('/article/', n.id)
+      WHERE pv.created_at >= :since
+      GROUP BY pv.path, n.title, n.source, n.category
+      ORDER BY views DESC
+      LIMIT 15`,
+    rep,
+  );
+
+  const [entryPages] = await sequelize.query(
+    `SELECT path, COUNT(*) AS sessions
+       FROM (
+         SELECT session_id,
+                SUBSTRING_INDEX(GROUP_CONCAT(path ORDER BY created_at ASC), ',', 1) AS path
+           FROM page_views
+          WHERE created_at >= :since AND session_id IS NOT NULL
+          GROUP BY session_id
+       ) e
+      GROUP BY path
+      ORDER BY sessions DESC
+      LIMIT 10`,
+    rep,
+  );
+
+  const groupBy = async (column, label, limit = 12) => {
+    const [rows] = await sequelize.query(
+      `SELECT COALESCE(NULLIF(\`${column}\`, ''), 'Unknown') AS label, COUNT(*) AS count,
+              COUNT(DISTINCT visitor_id) AS visitors
+         FROM page_views
+        WHERE created_at >= :since
+        GROUP BY label
+        ORDER BY count DESC
+        LIMIT ${limit}`,
+      rep,
+    );
+    return rows.map((r) => ({
+      [label]: r.label,
+      count: Number(r.count || 0),
+      visitors: Number(r.visitors || 0),
+    }));
+  };
+
+  const [countries] = await sequelize.query(
+    `SELECT COALESCE(country, country_code, 'Unknown') AS country,
+            country_code,
+            COUNT(*) AS count,
+            COUNT(DISTINCT visitor_id) AS visitors
+       FROM page_views
+      WHERE created_at >= :since
+      GROUP BY country, country_code
+      ORDER BY count DESC
+      LIMIT 20`,
+    rep,
+  );
+
+  const [cities] = await sequelize.query(
+    `SELECT city, country_code, COUNT(*) AS count
+       FROM page_views
+      WHERE created_at >= :since AND city IS NOT NULL AND city <> ''
+      GROUP BY city, country_code
+      ORDER BY count DESC
+      LIMIT 15`,
+    rep,
+  );
+
+  const [referrers] = await sequelize.query(
+    `SELECT COALESCE(NULLIF(referrer, ''), 'Direct') AS ref, COUNT(*) AS count
+       FROM page_views
+      WHERE created_at >= :since
+      GROUP BY ref
+      ORDER BY count DESC
+      LIMIT 10`,
+    rep,
+  );
+
+  const views = Number(totalsRow?.views || 0);
+  const visitors = Number(totalsRow?.visitors || 0);
+  const sessions = Number(sessionStats?.sessions || 0);
+  const bounced = Number(sessionStats?.bounced || 0);
+  const avgDuration = Number(sessionStats?.avg_duration || 0);
+
+  return {
+    totals: {
+      pageViews: views,
+      visits: visitors,
+      sessions,
+      pageViewsAllTime: Number(allTime?.views || 0),
+      visitsAllTime: Number(allTime?.visitors || 0),
+      viewsPerVisit: sessions > 0 ? Number((views / sessions).toFixed(2)) : 0,
+      avgSessionSeconds: Number(avgDuration.toFixed(0)),
+      bounceRate: sessions > 0 ? Number(((bounced / sessions) * 100).toFixed(1)) : 0,
+      newVisitors: Number(visitorMix?.new_visitors || 0),
+      returningVisitors: Number(visitorMix?.returning_visitors || 0),
+    },
+    topPages: topPages.map((p) => ({
+      path: p.path,
+      views: Number(p.views || 0),
+      visitors: Number(p.visitors || 0),
+    })),
+    topArticles: topArticles.map((a) => ({
+      path: a.path,
+      views: Number(a.views || 0),
+      visitors: Number(a.visitors || 0),
+      title: a.title,
+      source: a.source,
+      category: a.category,
+    })),
+    entryPages: entryPages.map((e) => ({
+      path: e.path,
+      sessions: Number(e.sessions || 0),
+    })),
+    countries: countries.map((c) => ({
+      country: c.country,
+      country_code: c.country_code,
+      count: Number(c.count || 0),
+      visitors: Number(c.visitors || 0),
+    })),
+    cities: cities.map((c) => ({
+      city: c.city,
+      country_code: c.country_code,
+      count: Number(c.count || 0),
+    })),
+    devices: await groupBy("device", "device"),
+    browsers: await groupBy("browser", "browser"),
+    os: await groupBy("os", "os"),
+    languages: await groupBy("language", "language", 10),
+    referrers: referrers.map((r) => ({
+      referrer: r.ref,
+      count: Number(r.count || 0),
+    })),
+  };
+}
+
+/**
  * GET /api/admin/analytics — platform analytics
  */
 async function getAnalytics(req, res) {
@@ -230,44 +434,8 @@ async function getAnalytics(req, res) {
       "SELECT reaction_type, COUNT(*) AS cnt FROM news_reactions GROUP BY reaction_type",
     );
 
-    // ─── Web analytics (page views + visits) ──────────────────
-    const since = new Date();
-    since.setHours(0, 0, 0, 0);
-    since.setDate(since.getDate() - (days - 1));
-
-    const [[pvRange]] = await sequelize.query(
-      "SELECT COUNT(*) AS cnt, COUNT(DISTINCT visitor_id) AS uniq FROM page_views WHERE created_at >= :since",
-      { replacements: { since } },
-    );
-    const [[pvAll]] = await sequelize.query(
-      "SELECT COUNT(*) AS cnt, COUNT(DISTINCT visitor_id) AS uniq FROM page_views",
-    );
-    const [topPages] = await sequelize.query(
-      `SELECT path, COUNT(*) AS cnt
-         FROM page_views
-        WHERE created_at >= :since
-        GROUP BY path
-        ORDER BY cnt DESC
-        LIMIT 12`,
-      { replacements: { since } },
-    );
-    const [devices] = await sequelize.query(
-      `SELECT COALESCE(device, 'unknown') AS device, COUNT(*) AS cnt
-         FROM page_views
-        WHERE created_at >= :since
-        GROUP BY device
-        ORDER BY cnt DESC`,
-      { replacements: { since } },
-    );
-    const [referrers] = await sequelize.query(
-      `SELECT COALESCE(NULLIF(referrer, ''), 'Direct') AS ref, COUNT(*) AS cnt
-         FROM page_views
-        WHERE created_at >= :since
-        GROUP BY ref
-        ORDER BY cnt DESC
-        LIMIT 8`,
-      { replacements: { since } },
-    );
+    // ─── Web analytics (page views, visits, behaviour, geo, tech) ───
+    const web = await webAnalytics(days);
 
     res.json({
       success: true,
@@ -281,10 +449,7 @@ async function getAnalytics(req, res) {
           reactions: Number(reactionsTotal?.cnt || 0),
           bookmarks: Number(bookmarksTotal?.cnt || 0),
           sources: Number(sourcesTotal?.cnt || 0),
-          pageViews: Number(pvRange?.cnt || 0),
-          visits: Number(pvRange?.uniq || 0),
-          pageViewsAllTime: Number(pvAll?.cnt || 0),
-          visitsAllTime: Number(pvAll?.uniq || 0),
+          ...web.totals,
         },
         series: {
           articles: await dailySeries("news", days),
@@ -296,18 +461,16 @@ async function getAnalytics(req, res) {
           pageViews: await dailySeries("page_views", days),
           visits: await dailyDistinctSeries("page_views", "visitor_id", days),
         },
-        topPages: topPages.map((p) => ({
-          path: p.path,
-          views: Number(p.cnt || 0),
-        })),
-        devices: devices.map((d) => ({
-          device: d.device,
-          count: Number(d.cnt || 0),
-        })),
-        referrers: referrers.map((r) => ({
-          referrer: r.ref,
-          count: Number(r.cnt || 0),
-        })),
+        topPages: web.topPages,
+        topArticles: web.topArticles,
+        entryPages: web.entryPages,
+        countries: web.countries,
+        cities: web.cities,
+        devices: web.devices,
+        browsers: web.browsers,
+        os: web.os,
+        languages: web.languages,
+        referrers: web.referrers,
         topUsers: topUsers.map((u) => ({
           id: u.id,
           name: u.name,

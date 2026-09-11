@@ -58,6 +58,9 @@ async function syncDatabase(options = {}) {
     // FULLTEXT index for news search/related (Sequelize can't define FULLTEXT natively)
     await ensureFullTextIndexes();
 
+    // Analytics columns added after the page_views table was first created
+    await ensurePageViewColumns();
+
     // Seed sources from DB seeder
     await seedSourcesIfEmpty();
 
@@ -66,6 +69,47 @@ async function syncDatabase(options = {}) {
   } catch (error) {
     logger.error("❌ Database sync failed:", error.message);
     throw error;
+  }
+}
+
+/**
+ * Ensure analytics columns exist on page_views.
+ * sync({ alter: false }) never adds columns to an existing table,
+ * so we add them idempotently here.
+ */
+async function ensurePageViewColumns() {
+  const columns = [
+    ["country", "VARCHAR(100) NULL"],
+    ["country_code", "CHAR(2) NULL"],
+    ["city", "VARCHAR(100) NULL"],
+    ["browser", "VARCHAR(40) NULL"],
+    ["os", "VARCHAR(40) NULL"],
+    ["language", "VARCHAR(20) NULL"],
+  ];
+
+  try {
+    const [[table]] = await sequelize.query(
+      "SELECT COUNT(*) AS cnt FROM information_schema.tables " +
+        "WHERE table_schema = DATABASE() AND table_name = 'page_views'",
+    );
+    if (Number(table?.cnt || 0) === 0) return; // table not created yet
+
+    for (const [name, def] of columns) {
+      const [[row]] = await sequelize.query(
+        "SELECT COUNT(*) AS cnt FROM information_schema.columns " +
+          "WHERE table_schema = DATABASE() AND table_name = 'page_views' " +
+          "AND column_name = :name",
+        { replacements: { name } },
+      );
+      if (Number(row?.cnt || 0) === 0) {
+        await sequelize.query(
+          `ALTER TABLE page_views ADD COLUMN \`${name}\` ${def}`,
+        );
+        logger.info(`✅ Added column page_views.${name}`);
+      }
+    }
+  } catch (error) {
+    logger.warn("⚠️ Could not ensure page_views columns:", error.message);
   }
 }
 
