@@ -68,14 +68,17 @@ async function syncDatabase(options = {}) {
       );
     }
 
+    // Columns added to page_views after the table was first created must exist
+    // BEFORE sync() runs. sync() also (re)creates the model's indexes, and
+    // adding an index for a column that is missing fails with MySQL error 1072:
+    // "Key column 'country_code' doesn't exist in table".
+    await ensurePageViewColumns();
+
     await sequelize.sync(options);
     logger.info("✅ Database synced successfully.");
 
     // FULLTEXT index for news search/related (Sequelize can't define FULLTEXT natively)
     await ensureFullTextIndexes();
-
-    // Analytics columns added after the page_views table was first created
-    await ensurePageViewColumns();
 
     // Seed sources from DB seeder
     await seedSourcesIfEmpty();
@@ -83,7 +86,7 @@ async function syncDatabase(options = {}) {
     // Seed default pages if empty
     await seedPagesIfEmpty();
   } catch (error) {
-    logger.error("❌ Database sync failed:", error.message);
+    logger.error(`❌ Database sync failed: ${error.message}`);
     throw error;
   }
 }
@@ -104,29 +107,42 @@ async function ensurePageViewColumns() {
     ["language", "VARCHAR(20) NULL"],
   ];
 
+  let tableExists = false;
   try {
     const [[table]] = await sequelize.query(
       "SELECT COUNT(*) AS cnt FROM information_schema.tables " +
         "WHERE table_schema = DATABASE() AND table_name = 'page_views'",
     );
-    if (Number(table?.cnt || 0) === 0) return; // table not created yet
+    tableExists = Number(table?.cnt || 0) > 0;
+  } catch (error) {
+    // A brand new database has no page_views table yet — sync() will create it
+    // with every column already defined.
+    logger.warn(`⚠️ Could not inspect page_views table: ${error.message}`);
+    return;
+  }
+  if (!tableExists) return;
 
-    for (const [name, def] of columns) {
+  // Each column is attempted independently: one failure must not skip the rest,
+  // or sync() would then fail trying to index a still-missing column.
+  for (const [name, def] of columns) {
+    try {
       const [[row]] = await sequelize.query(
         "SELECT COUNT(*) AS cnt FROM information_schema.columns " +
           "WHERE table_schema = DATABASE() AND table_name = 'page_views' " +
           "AND column_name = :name",
         { replacements: { name } },
       );
-      if (Number(row?.cnt || 0) === 0) {
-        await sequelize.query(
-          `ALTER TABLE page_views ADD COLUMN \`${name}\` ${def}`,
-        );
-        logger.info(`✅ Added column page_views.${name}`);
-      }
+      if (Number(row?.cnt || 0) > 0) continue;
+
+      await sequelize.query(
+        `ALTER TABLE page_views ADD COLUMN \`${name}\` ${def}`,
+      );
+      logger.info(`✅ Added missing column page_views.${name}`);
+    } catch (error) {
+      logger.error(
+        `❌ Could not add column page_views.${name}: ${error.message}`,
+      );
     }
-  } catch (error) {
-    logger.warn("⚠️ Could not ensure page_views columns:", error.message);
   }
 }
 

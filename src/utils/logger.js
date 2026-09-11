@@ -4,6 +4,7 @@
  */
 const winston = require("winston");
 const path = require("path");
+const util = require("util");
 
 const logDir = path.join(process.cwd(), "logs");
 
@@ -38,6 +39,27 @@ const logger = winston.createLogger({
 // stdout/stderr — NOT files inside the container. Without a Console transport
 // a production container emits nothing at all, so a startup crash shows up as
 // an empty log viewer and an unexplained 502.
+// winston stores the extra arguments of logger.error(msg, x) under this symbol
+// and they are NOT part of `message`. Without reading it they are silently
+// dropped, which is how "Database sync failed:" lost its actual reason.
+const SPLAT = Symbol.for("splat");
+
+function extraText(info) {
+  const splat = info[SPLAT];
+  if (!Array.isArray(splat) || splat.length === 0) return "";
+  return splat
+    .map((v) => (typeof v === "string" ? v : util.inspect(v, { depth: 3 })))
+    .join(" ");
+}
+
+function line(info) {
+  const extra = extraText(info);
+  const head = `${info.timestamp} [${info.level}] ${info.message}${
+    extra ? ` ${extra}` : ""
+  }`;
+  return info.stack ? `${head}\n${info.stack}` : head;
+}
+
 logger.add(
   new winston.transports.Console({
     format:
@@ -45,22 +67,13 @@ logger.add(
         ? winston.format.combine(
             winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
             winston.format.errors({ stack: true }),
-            winston.format.printf(({ timestamp, level, message, stack }) =>
-              stack
-                ? `${timestamp} [${level}] ${message}\n${stack}`
-                : `${timestamp} [${level}] ${message}`,
-            ),
+            winston.format.printf(line),
           )
         : winston.format.combine(
+            winston.format.timestamp({ format: "YYYY-MM-DD HH:mm:ss" }),
+            winston.format.errors({ stack: true }),
             winston.format.colorize(),
-            winston.format.printf(
-              ({ timestamp, level, message, service, ...meta }) => {
-                const metaStr = Object.keys(meta).length
-                  ? ` ${JSON.stringify(meta)}`
-                  : "";
-                return `${timestamp} [${level}] ${message}${metaStr}`;
-              },
-            ),
+            winston.format.printf(line),
           ),
   }),
 );
