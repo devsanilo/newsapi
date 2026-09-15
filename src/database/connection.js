@@ -175,6 +175,21 @@ async function ensureNewsAuthoringColumns() {
   }
   if (!tableExists) return;
 
+  // Legacy datasets can contain invalid zero dates in published_at.
+  // MySQL strict mode rejects ALTER TABLE while those rows exist.
+  try {
+    await sequelize.query(
+      "SET SESSION sql_mode = REPLACE(REPLACE(@@sql_mode, 'NO_ZERO_DATE', ''), 'NO_ZERO_IN_DATE', '')",
+    );
+    await sequelize.query(
+      "UPDATE news SET published_at = NULL WHERE published_at < '1000-01-01 00:00:00'",
+    );
+  } catch (error) {
+    logger.warn(
+      `⚠️ Could not normalize legacy news.published_at values: ${error.message}`,
+    );
+  }
+
   for (const [name, def] of columns) {
     try {
       const [[row]] = await sequelize.query(
