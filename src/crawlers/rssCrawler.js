@@ -11,6 +11,7 @@ const { v4: uuidv4 } = require("uuid");
 const logger = require("../utils/logger");
 const { generateHash } = require("../utils/hash");
 const {
+  cleanTitle,
   cleanDescription,
   cleanContent,
   extractTags,
@@ -227,7 +228,7 @@ class RSSCrawler {
    */
   _normalizeItem(item, { source, category, language }) {
     try {
-      const title = item.title?.trim();
+      const title = cleanTitle(item.title);
       const link = item.link?.trim();
       if (!title || !link) return null;
 
@@ -258,7 +259,7 @@ class RSSCrawler {
 
       return {
         id: uuidv4(),
-        title: title.substring(0, 500),
+        title,
         description,
         content,
         image_url: imageUrl,

@@ -86,6 +86,17 @@ async function getTrending(req, res, next) {
   }
 }
 
+async function getOriginals(req, res, next) {
+  try {
+    const { page, limit } = req.query;
+    const result = await newsService.getOriginals({ page, limit });
+    result.data = await enrichArticles(result.data, req.user?.id);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+}
+
 async function getCategories(req, res, next) {
   try {
     res.json({ success: true, data: await newsService.getCategories() });
@@ -144,6 +155,7 @@ module.exports = {
   getSearchSuggestions,
   searchByKeyword,
   getTrending,
+  getOriginals,
   getCategories,
   getSources,
   getStats,

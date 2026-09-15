@@ -5,11 +5,75 @@
 const { Op } = require("sequelize");
 const { sequelize } = require("../database/connection");
 const User = require("../models/User");
+const News = require("../models/News");
 const Setting = require("../models/Setting");
 const emailService = require("../services/emailService");
 const logger = require("../utils/logger");
+const { v4: uuidv4 } = require("uuid");
+const { generateHash } = require("../utils/hash");
+const { toCanonicalCategory } = require("../utils/categories");
+const { decodeEntities, cleanTitle, cleanDescription } = require("../utils/cleaner");
 
 const PAGE_SIZE = 20;
+
+function toArrayTags(input) {
+  if (!input) return [];
+  if (Array.isArray(input)) {
+    return input
+      .map((t) => String(t || "").trim())
+      .filter(Boolean)
+      .slice(0, 25);
+  }
+  if (typeof input === "string") {
+    return input
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 25);
+  }
+  return [];
+}
+
+function adminArticleDTO(article) {
+  return {
+    id: article.id,
+    title: decodeEntities(article.title),
+    description: decodeEntities(article.description),
+    content: decodeEntities(article.content),
+    image_url: article.image_url,
+    source: article.source,
+    category: article.category,
+    url: article.url,
+    tags: Array.isArray(article.tags) ? article.tags : [],
+    language: article.language,
+    is_original: Boolean(article.is_original),
+    is_published: Boolean(article.is_published),
+    author_id: article.author_id || null,
+    published_at: article.published_at,
+    updated_at: article.updated_at,
+    created_at: article.created_at,
+  };
+}
+
+function buildOriginalArticlePayload(body = {}) {
+  const title = cleanTitle(body.title || "", 500);
+  const descriptionInput = String(body.description || "").trim();
+  const content = String(body.content || "").trim();
+  const imageUrl = String(body.image_url || "").trim();
+  const category = toCanonicalCategory(body.category || "general", "general");
+  const tags = toArrayTags(body.tags);
+
+  return {
+    title,
+    description: cleanDescription(descriptionInput || content.slice(0, 520), 500),
+    content,
+    image_url: imageUrl || null,
+    category,
+    tags,
+    is_published: Boolean(body.is_published),
+    published_at: body.published_at ? new Date(body.published_at) : null,
+  };
+}
 
 /**
  * GET /api/admin/users — list users (search / role / status / paginated)
@@ -362,7 +426,7 @@ async function webAnalytics(days) {
       path: a.path,
       views: Number(a.views || 0),
       visitors: Number(a.visitors || 0),
-      title: a.title,
+      title: decodeEntities(a.title),
       source: a.source,
       category: a.category,
     })),
@@ -521,6 +585,195 @@ async function testEmail(req, res) {
 }
 
 /**
+ * POST /api/admin/articles — create a first-party Trenxi article (draft/published)
+ */
+async function createArticle(req, res) {
+  try {
+    const payload = buildOriginalArticlePayload(req.body || {});
+    if (!payload.title || !payload.content) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and content are required.",
+      });
+    }
+
+    const id = uuidv4();
+    const now = new Date();
+    const appUrl = (process.env.APP_URL || "https://trenxi.com").replace(/\/+$/, "");
+    const shouldPublish = Boolean(payload.is_published);
+    const publishedAt = shouldPublish
+      ? (payload.published_at && !Number.isNaN(payload.published_at.getTime())
+          ? payload.published_at
+          : now)
+      : null;
+
+    const article = await News.create({
+      id,
+      title: payload.title,
+      description: payload.description,
+      content: payload.content,
+      image_url: payload.image_url,
+      source: "trenxi",
+      category: payload.category,
+      url: `${appUrl}/article/${id}`,
+      hash: generateHash(`${payload.title}:${id}`, "trenxi", now),
+      tags: payload.tags,
+      language: "en",
+      is_original: true,
+      is_published: shouldPublish,
+      author_id: req.user?.id || null,
+      published_at: publishedAt,
+      updated_at: now,
+      created_at: now,
+    });
+
+    res.status(201).json({ success: true, data: adminArticleDTO(article.toJSON()) });
+  } catch (err) {
+    logger.error("admin.createArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * GET /api/admin/articles/:id — fetch a single article for editor use
+ */
+async function getArticle(req, res) {
+  try {
+    const article = await News.findByPk(req.params.id, { raw: true });
+    if (!article) {
+      return res.status(404).json({ success: false, message: "Article not found" });
+    }
+    res.json({ success: true, data: adminArticleDTO(article) });
+  } catch (err) {
+    logger.error("admin.getArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * PATCH /api/admin/articles/:id — edit first-party Trenxi article fields
+ */
+async function updateArticle(req, res) {
+  try {
+    const article = await News.findByPk(req.params.id);
+    if (!article) {
+      return res.status(404).json({ success: false, message: "Article not found" });
+    }
+    if (!article.is_original) {
+      return res.status(400).json({
+        success: false,
+        message: "Only Trenxi original articles can be edited in admin.",
+      });
+    }
+
+    const now = new Date();
+    const body = req.body || {};
+
+    if (body.title !== undefined) article.title = cleanTitle(body.title || "", 500);
+    if (body.description !== undefined) {
+      article.description = cleanDescription(String(body.description || ""), 500);
+    }
+    if (body.content !== undefined) {
+      article.content = String(body.content || "").trim();
+    }
+    if (body.image_url !== undefined) {
+      const image = String(body.image_url || "").trim();
+      article.image_url = image || null;
+    }
+    if (body.category !== undefined) {
+      article.category = toCanonicalCategory(body.category || "general", "general");
+    }
+    if (body.tags !== undefined) {
+      article.tags = toArrayTags(body.tags);
+    }
+    if (body.is_published !== undefined) {
+      article.is_published = Boolean(body.is_published);
+      if (article.is_published && !article.published_at) {
+        article.published_at = now;
+      }
+      if (!article.is_published) {
+        article.published_at = null;
+      }
+    }
+    if (body.published_at !== undefined && body.published_at) {
+      const dt = new Date(body.published_at);
+      if (!Number.isNaN(dt.getTime())) article.published_at = dt;
+    }
+
+    if (!article.title || !article.content) {
+      return res.status(400).json({
+        success: false,
+        message: "Title and content are required.",
+      });
+    }
+
+    article.updated_at = now;
+    await article.save();
+
+    res.json({ success: true, data: adminArticleDTO(article.toJSON()) });
+  } catch (err) {
+    logger.error("admin.updateArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * POST /api/admin/articles/:id/publish — quick toggle publish state
+ */
+async function publishArticle(req, res) {
+  try {
+    const article = await News.findByPk(req.params.id);
+    if (!article) {
+      return res.status(404).json({ success: false, message: "Article not found" });
+    }
+    if (!article.is_original) {
+      return res.status(400).json({
+        success: false,
+        message: "Only Trenxi original articles can be published/unpublished.",
+      });
+    }
+
+    const publish = req.body?.publish !== undefined
+      ? Boolean(req.body.publish)
+      : !Boolean(article.is_published);
+
+    article.is_published = publish;
+    article.published_at = publish ? article.published_at || new Date() : null;
+    article.updated_at = new Date();
+    await article.save();
+
+    res.json({ success: true, data: adminArticleDTO(article.toJSON()) });
+  } catch (err) {
+    logger.error("admin.publishArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * DELETE /api/admin/articles/:id — delete first-party Trenxi original article
+ */
+async function deleteArticle(req, res) {
+  try {
+    const article = await News.findByPk(req.params.id, { raw: true });
+    if (!article) {
+      return res.status(404).json({ success: false, message: "Article not found" });
+    }
+    if (!article.is_original) {
+      return res.status(400).json({
+        success: false,
+        message: "Only Trenxi original articles can be deleted from admin.",
+      });
+    }
+
+    await News.destroy({ where: { id: article.id } });
+    res.json({ success: true, message: "Article deleted" });
+  } catch (err) {
+    logger.error("admin.deleteArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
  * GET /api/admin/articles — list articles with engagement counts
  */
 async function getArticles(req, res) {
@@ -529,22 +782,29 @@ async function getArticles(req, res) {
     const limit = Math.min(parseInt(req.query.limit, 10) || 25, 100);
     const offset = (page - 1) * limit;
     const search = (req.query.q || "").trim();
+    const type = String(req.query.type || "all").toLowerCase();
 
-    let where = "1=1";
+    const clauses = [];
     const params = { limit, offset };
     if (search) {
-      where = "(n.title LIKE :s OR n.description LIKE :s OR n.source LIKE :s)";
+      clauses.push("(n.title LIKE :s OR n.description LIKE :s OR n.source LIKE :s)");
       params.s = `%${search}%`;
     }
+    if (type === "original") clauses.push("n.is_original = 1");
+    if (type === "aggregated") clauses.push("n.is_original = 0");
+    const where = clauses.length ? clauses.join(" AND ") : "1=1";
 
     const [rows] = await sequelize.query(
       `SELECT n.id, n.title, n.source, n.category, n.published_at,
+              n.is_original, n.is_published, n.author_id, n.updated_at,
+              u.name AS author_name,
               COALESCE(i.cnt,0) AS impressions_count,
               COALESCE(r.cnt,0) AS reactions_count,
               COALESCE(b.cnt,0) AS bookmarks_count,
               COALESCE(c.cnt,0) AS comments_count,
               COALESCE(l.cnt,0) AS likes_count
          FROM news n
+         LEFT JOIN users u ON u.id = n.author_id
          LEFT JOIN (SELECT news_id, COUNT(*) cnt FROM impressions GROUP BY news_id) i ON i.news_id = n.id
          LEFT JOIN (SELECT news_id, COUNT(*) cnt FROM news_reactions GROUP BY news_id) r ON r.news_id = n.id
          LEFT JOIN (SELECT news_id, COUNT(*) cnt FROM bookmarks GROUP BY news_id) b ON b.news_id = n.id
@@ -566,10 +826,15 @@ async function getArticles(req, res) {
       success: true,
       data: rows.map((r) => ({
         id: r.id,
-        title: r.title,
+        title: decodeEntities(r.title),
         source: r.source,
         category: r.category,
+        is_original: Boolean(r.is_original),
+        is_published: Boolean(r.is_published),
+        author_id: r.author_id,
+        author_name: r.author_name,
         published_at: r.published_at,
+        updated_at: r.updated_at,
         impressions_count: Number(r.impressions_count || 0),
         reactions_count: Number(r.reactions_count || 0),
         bookmarks_count: Number(r.bookmarks_count || 0),
@@ -591,4 +856,16 @@ async function getArticles(req, res) {
   }
 }
 
-module.exports = { getUsers, updateUser, deleteUser, getAnalytics, testEmail, getArticles };
+module.exports = {
+  getUsers,
+  updateUser,
+  deleteUser,
+  getAnalytics,
+  testEmail,
+  getArticles,
+  getArticle,
+  createArticle,
+  updateArticle,
+  publishArticle,
+  deleteArticle,
+};

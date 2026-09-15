@@ -53,7 +53,6 @@ async function updatePage(req, res) {
         content,
         meta_description,
         is_published,
-        updated_by: req.user?.id,
       },
       { where: { slug: req.params.slug } },
     );
@@ -100,7 +99,6 @@ async function createPage(req, res) {
       content,
       meta_description,
       is_published: is_published !== false,
-      updated_by: req.user?.id,
     });
     res.status(201).json({ success: true, data: page });
   } catch (err) {

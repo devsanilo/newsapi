@@ -14,6 +14,7 @@ const {
   NewsReaction,
 } = require("../models");
 const logger = require("../utils/logger");
+const { decodeEntities } = require("../utils/cleaner");
 
 // ─── Shared enrichment helper (parallelized) ─────────────────
 async function enrichArticles(articles, userId) {
@@ -114,6 +115,9 @@ async function enrichArticles(articles, userId) {
 
   return articles.map((a) => ({
     ...a,
+    title: decodeEntities(a.title),
+    description: decodeEntities(a.description),
+    content: decodeEntities(a.content),
     likes_count: likeMap[a.id] || 0,
     comments_count: commentMap[a.id] || 0,
     impressions_count: Object.prototype.hasOwnProperty.call(impressionMap, a.id)
@@ -146,6 +150,19 @@ function parseTags(tags) {
     }
   }
   return tags;
+}
+
+// Decode stored HTML entities and parse tags for every article we return,
+// so rows crawled before the cleaner handled entities still render cleanly.
+function shapeArticle(a) {
+  if (!a) return a;
+  return {
+    ...a,
+    tags: parseTags(a.tags),
+    title: decodeEntities(a.title),
+    description: decodeEntities(a.description),
+    content: decodeEntities(a.content),
+  };
 }
 
 /** Safely parse a JSON column that may be a string or already parsed */
@@ -227,7 +244,7 @@ async function getForYou(req, res, next) {
     }
 
     // Build WHERE clause
-    let where = {};
+    let where = { is_published: true };
     if (topCats.length > 0 || explicitSrcs.length > 0) {
       const conditions = [];
       if (topCats.length > 0)
@@ -266,7 +283,7 @@ async function getForYou(req, res, next) {
 
     // Engagement scoring + re-rank
     const enriched = await enrichArticles(
-      rows.map((a) => ({ ...a, tags: parseTags(a.tags) })),
+      rows.map(shapeArticle),
       userId,
     );
 
@@ -371,7 +388,8 @@ async function markAsRead(req, res, next) {
     const { newsId } = req.params;
     const userId = req.user.id;
 
-    const news = await News.findByPk(newsId, {
+    const news = await News.findOne({
+      where: { id: newsId, is_published: true },
       attributes: ["id", "category", "source"],
       raw: true,
     });
@@ -437,9 +455,8 @@ async function getReadHistory(req, res, next) {
 
     const articles = rows
       .map((r) => {
-        const a = r.news ? r.news.toJSON() : null;
+        const a = r.news ? shapeArticle(r.news.toJSON()) : null;
         if (a) {
-          a.tags = parseTags(a.tags);
           a.read_at = r.read_at;
           a.read_count = r.read_count;
         }
@@ -479,7 +496,8 @@ async function getRelated(req, res, next) {
     const newsId = req.params.id || req.params.newsId;
     const limit = Math.min(parseInt(req.query.limit, 10) || 10, 30);
 
-    const article = await News.findByPk(newsId, {
+    const article = await News.findOne({
+      where: { id: newsId, is_published: true },
       attributes: ["id", "title", "category", "source"],
       raw: true,
     });
@@ -496,6 +514,7 @@ async function getRelated(req, res, next) {
       `SELECT *, MATCH(title, description) AGAINST(${escaped} IN NATURAL LANGUAGE MODE) AS relevance
        FROM news
        WHERE id != :newsId
+         AND is_published = 1
          AND MATCH(title, description) AGAINST(${escaped} IN NATURAL LANGUAGE MODE)
        ORDER BY
          CASE WHEN category = :category THEN 0 ELSE 1 END,
@@ -505,7 +524,7 @@ async function getRelated(req, res, next) {
       { replacements: { newsId, category: article.category || "", limit } },
     );
 
-    const data = rows.map((a) => ({ ...a, tags: parseTags(a.tags) }));
+    const data = rows.map(shapeArticle);
     const enriched = await enrichArticles(data, req.user?.id);
 
     res.json({ success: true, data: enriched });
@@ -537,13 +556,13 @@ async function syncNews(req, res, next) {
     }
 
     const articles = await News.findAll({
-      where: { created_at: { [Op.gt]: sinceDate } },
+      where: { created_at: { [Op.gt]: sinceDate }, is_published: true },
       order: [["created_at", "ASC"]],
       limit,
       raw: true,
     });
 
-    const data = articles.map((a) => ({ ...a, tags: parseTags(a.tags) }));
+    const data = articles.map(shapeArticle);
     const enriched = req.user ? await enrichArticles(data, req.user.id) : data;
 
     res.json({
@@ -600,4 +619,5 @@ module.exports = {
   syncNews,
   trackImpression,
   enrichArticles,
+  shapeArticle,
 };

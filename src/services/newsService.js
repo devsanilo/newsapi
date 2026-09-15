@@ -6,6 +6,7 @@ const { Op } = require("sequelize");
 const { sequelize } = require("../database/connection");
 const News = require("../models/News");
 const logger = require("../utils/logger");
+const { decodeEntities } = require("../utils/cleaner");
 
 class NewsService {
   /**
@@ -107,6 +108,9 @@ class NewsService {
 
     const where = {};
 
+    // Public feed must never include drafts.
+    where.is_published = true;
+
     if (category) {
       where.category = category.toLowerCase();
     }
@@ -156,7 +160,10 @@ class NewsService {
    * @returns {Object|null}
    */
   async getNewsById(id) {
-    const article = await News.findByPk(id, { raw: true });
+    const article = await News.findOne({
+      where: { id, is_published: true },
+      raw: true,
+    });
     if (!article) return null;
     return this._formatArticle(article);
   }
@@ -211,7 +218,7 @@ class NewsService {
 
     const [rows] = await sequelize.query(
       `SELECT DISTINCT title FROM news 
-       WHERE title LIKE :searchTerm 
+       WHERE is_published = 1 AND title LIKE :searchTerm 
        ORDER BY published_at DESC 
        LIMIT :limit`,
       { replacements: { searchTerm, limit: safeLimit } },
@@ -241,7 +248,7 @@ class NewsService {
     const searchTerm = `%${keyword.trim()}%`;
 
     let whereClause =
-      "WHERE (title LIKE :searchTerm OR description LIKE :searchTerm)";
+      "WHERE is_published = 1 AND (title LIKE :searchTerm OR description LIKE :searchTerm)";
     const replacements = { searchTerm, limit, offset };
 
     if (category) {
@@ -296,6 +303,43 @@ class NewsService {
   }
 
   /**
+   * Get published first-party Trenxi originals
+   * @param {Object} options - { page, limit }
+   * @returns {Object} - { data, pagination }
+   */
+  async getOriginals({ page = 1, limit = 20 } = {}) {
+    const maxLimit = parseInt(process.env.MAX_PAGE_SIZE, 10) || 100;
+    limit = Math.min(parseInt(limit, 10) || 20, maxLimit);
+    page = Math.max(parseInt(page, 10) || 1, 1);
+    const offset = (page - 1) * limit;
+
+    const where = { is_published: true, is_original: true };
+
+    const [rows, count] = await Promise.all([
+      News.findAll({
+        where,
+        order: [["published_at", "DESC"], ["created_at", "DESC"], ["id", "DESC"]],
+        limit,
+        offset,
+        raw: true,
+      }),
+      News.count({ where }),
+    ]);
+
+    return {
+      data: rows.map(this._formatArticle),
+      pagination: {
+        page,
+        limit,
+        total: count,
+        totalPages: Math.ceil(count / limit),
+        hasNext: page * limit < count,
+        hasPrev: page > 1,
+      },
+    };
+  }
+
+  /**
    * Fallback trending: recent articles weighted by impressions
    */
   async _fallbackTrending(limit) {
@@ -309,6 +353,7 @@ class NewsService {
          FROM impressions
          GROUP BY news_id
        ) i ON i.news_id = n.id
+       WHERE n.is_published = 1
        ORDER BY n.published_at DESC, impressions_score DESC
        LIMIT :limit`,
       { replacements: { limit: recentLimit } },
@@ -325,7 +370,7 @@ class NewsService {
       attributes: [
         [sequelize.fn("DISTINCT", sequelize.col("category")), "category"],
       ],
-      where: { category: { [Op.ne]: null } },
+      where: { category: { [Op.ne]: null }, is_published: true },
       raw: true,
     });
     return results
@@ -343,7 +388,7 @@ class NewsService {
       attributes: [
         [sequelize.fn("DISTINCT", sequelize.col("source")), "source"],
       ],
-      where: { source: { [Op.ne]: null } },
+      where: { source: { [Op.ne]: null }, is_published: true },
       raw: true,
     });
     return results
@@ -357,9 +402,10 @@ class NewsService {
    * @returns {Object}
    */
   async getStats() {
-    const total = await News.count();
+    const total = await News.count({ where: { is_published: true } });
     const today = await News.count({
       where: {
+        is_published: true,
         created_at: { [Op.gte]: new Date(new Date().setHours(0, 0, 0, 0)) },
       },
     });
@@ -369,6 +415,7 @@ class NewsService {
         "category",
         [sequelize.fn("COUNT", sequelize.col("id")), "count"],
       ],
+      where: { is_published: true },
       group: ["category"],
       raw: true,
     });
@@ -378,6 +425,7 @@ class NewsService {
         "source",
         [sequelize.fn("COUNT", sequelize.col("id")), "count"],
       ],
+      where: { is_published: true },
       group: ["source"],
       raw: true,
     });
@@ -461,16 +509,20 @@ class NewsService {
 
     return {
       id: article.id,
-      title: article.title,
-      description: article.description,
-      content: article.content,
+      title: decodeEntities(article.title),
+      description: decodeEntities(article.description),
+      content: decodeEntities(article.content),
       image_url: article.image_url,
       source: article.source,
       category: article.category,
       url: article.url,
+      is_original: Boolean(article.is_original),
+      is_published: Boolean(article.is_published),
+      author_id: article.author_id || null,
       tags: tags || [],
       language: article.language,
       published_at: article.published_at,
+      updated_at: article.updated_at,
       created_at: article.created_at,
       // Include relevance score if present (from search)
       ...(article.relevance !== undefined && { relevance: article.relevance }),

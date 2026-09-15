@@ -73,6 +73,7 @@ async function syncDatabase(options = {}) {
     // adding an index for a column that is missing fails with MySQL error 1072:
     // "Key column 'country_code' doesn't exist in table".
     await ensurePageViewColumns();
+    await ensureNewsAuthoringColumns();
 
     await sequelize.sync(options);
     logger.info("✅ Database synced successfully.");
@@ -142,6 +143,52 @@ async function ensurePageViewColumns() {
       logger.error(
         `❌ Could not add column page_views.${name}: ${error.message}`,
       );
+    }
+  }
+}
+
+/**
+ * Ensure authoring columns exist on news.
+ *
+ * We rely on sync({ alter: false }), so schema evolution must be done manually.
+ * These fields power first-party publishing: draft state, original-content flag,
+ * author tracking, and update timestamps.
+ */
+async function ensureNewsAuthoringColumns() {
+  const columns = [
+    ["is_original", "TINYINT(1) NOT NULL DEFAULT 0"],
+    ["is_published", "TINYINT(1) NOT NULL DEFAULT 1"],
+    ["author_id", "CHAR(36) NULL"],
+    ["updated_at", "DATETIME NULL"],
+  ];
+
+  let tableExists = false;
+  try {
+    const [[table]] = await sequelize.query(
+      "SELECT COUNT(*) AS cnt FROM information_schema.tables " +
+        "WHERE table_schema = DATABASE() AND table_name = 'news'",
+    );
+    tableExists = Number(table?.cnt || 0) > 0;
+  } catch (error) {
+    logger.warn(`⚠️ Could not inspect news table: ${error.message}`);
+    return;
+  }
+  if (!tableExists) return;
+
+  for (const [name, def] of columns) {
+    try {
+      const [[row]] = await sequelize.query(
+        "SELECT COUNT(*) AS cnt FROM information_schema.columns " +
+          "WHERE table_schema = DATABASE() AND table_name = 'news' " +
+          "AND column_name = :name",
+        { replacements: { name } },
+      );
+      if (Number(row?.cnt || 0) > 0) continue;
+
+      await sequelize.query(`ALTER TABLE news ADD COLUMN \`${name}\` ${def}`);
+      logger.info(`✅ Added missing column news.${name}`);
+    } catch (error) {
+      logger.error(`❌ Could not add column news.${name}: ${error.message}`);
     }
   }
 }

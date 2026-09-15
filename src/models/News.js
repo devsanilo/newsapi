@@ -65,14 +65,16 @@ class News extends Model {
     const [rows] = await sequelize.query(
       `SELECT *, MATCH(title, description) AGAINST(${escapedQuery} IN NATURAL LANGUAGE MODE) AS relevance
        FROM news
-       WHERE MATCH(title, description) AGAINST(${escapedQuery} IN NATURAL LANGUAGE MODE)
+       WHERE is_published = 1
+         AND MATCH(title, description) AGAINST(${escapedQuery} IN NATURAL LANGUAGE MODE)
        ORDER BY relevance DESC, published_at DESC
        LIMIT ${parseInt(limit, 10)} OFFSET ${parseInt(offset, 10)}`,
     );
 
     const [[{ total }]] = await sequelize.query(
       `SELECT COUNT(*) as total FROM news
-       WHERE MATCH(title, description) AGAINST(${escapedQuery} IN NATURAL LANGUAGE MODE)`,
+       WHERE is_published = 1
+         AND MATCH(title, description) AGAINST(${escapedQuery} IN NATURAL LANGUAGE MODE)`,
     );
 
     return { rows, count: total };
@@ -97,11 +99,13 @@ class News extends Model {
        INNER JOIN (
          SELECT category, COUNT(*) AS article_count
          FROM news
-         WHERE COALESCE(published_at, created_at) >= :cutoff
+         WHERE is_published = 1
+           AND COALESCE(published_at, created_at) >= :cutoff
            AND category IS NOT NULL
          GROUP BY category
        ) cat_counts ON n.category = cat_counts.category
-       WHERE COALESCE(n.published_at, n.created_at) >= :cutoff
+       WHERE n.is_published = 1
+         AND COALESCE(n.published_at, n.created_at) >= :cutoff
        ORDER BY cat_counts.article_count DESC, COALESCE(n.published_at, n.created_at) DESC
        LIMIT :limit`,
       {
@@ -180,10 +184,32 @@ News.init(
       defaultValue: "en",
       comment: "Article language code",
     },
+    is_original: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: false,
+      comment: "True for first-party Trenxi-authored posts",
+    },
+    is_published: {
+      type: DataTypes.BOOLEAN,
+      allowNull: false,
+      defaultValue: true,
+      comment: "False for drafts; only published rows are public",
+    },
+    author_id: {
+      type: DataTypes.CHAR(36),
+      allowNull: true,
+      comment: "Optional user id for original authored posts",
+    },
     published_at: {
       type: DataTypes.DATE,
       allowNull: true,
       comment: "Original publication date",
+    },
+    updated_at: {
+      type: DataTypes.DATE,
+      allowNull: true,
+      comment: "Last update timestamp",
     },
     created_at: {
       type: DataTypes.DATE,
@@ -220,6 +246,18 @@ News.init(
       {
         name: "idx_created_at",
         fields: [{ name: "created_at", order: "DESC" }],
+      },
+      {
+        name: "idx_is_published",
+        fields: ["is_published"],
+      },
+      {
+        name: "idx_is_original",
+        fields: ["is_original"],
+      },
+      {
+        name: "idx_author_id",
+        fields: ["author_id"],
       },
       // FULLTEXT index is created manually in connection.js
       // because Sequelize doesn't natively support FULLTEXT indexes

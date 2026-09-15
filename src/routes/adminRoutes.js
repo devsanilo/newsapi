@@ -27,6 +27,11 @@ router.patch("/users/:id", adminController.updateUser);
 router.delete("/users/:id", adminController.deleteUser);
 
 router.get("/articles", adminController.getArticles);
+router.get("/articles/:id", adminController.getArticle);
+router.post("/articles", adminController.createArticle);
+router.patch("/articles/:id", adminController.updateArticle);
+router.post("/articles/:id/publish", adminController.publishArticle);
+router.delete("/articles/:id", adminController.deleteArticle);
 
 router.get("/analytics", adminController.getAnalytics);
 router.post("/test-email", adminController.testEmail);

@@ -1,6 +1,7 @@
 const Parser = require("rss-parser");
 const { generateHash } = require("../utils/hash");
 const { cleanText, toCanonicalCategory } = require("../utils/categories");
+const { decodeEntities } = require("../utils/cleaner");
 const logger = require("../utils/logger");
 
 const parser = new Parser({
@@ -54,7 +55,7 @@ function normalizeItem(item, feedUrl) {
     item.isoDate || item.pubDate || item.published || item.date;
   const publishedAt = publishedRaw ? new Date(publishedRaw) : null;
   const source = extractSourceName(feedUrl, item.link);
-  const title = item.title || source;
+  const title = decodeEntities(cleanText(item.title)) || source;
   const hash = generateHash(title, source, publishedAt || new Date());
 
   let poster = null;
@@ -80,7 +81,7 @@ function normalizeItem(item, feedUrl) {
   return {
     id: hash,
     title,
-    description: item.contentSnippet || item.summary || "",
+    description: decodeEntities(item.contentSnippet || item.summary || ""),
     video_url: videoUrl,
     poster_url: poster,
     duration_seconds: durationSeconds,

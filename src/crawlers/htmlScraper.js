@@ -10,6 +10,7 @@ const { v4: uuidv4 } = require("uuid");
 const logger = require("../utils/logger");
 const { generateHash } = require("../utils/hash");
 const {
+  cleanTitle,
   cleanContent,
   cleanDescription,
   extractTags,
@@ -215,7 +216,7 @@ class HTMLScraper {
       const $ = cheerio.load(html);
 
       // Extract title
-      const title = $(config.titleSelector).first().text().trim();
+      const title = cleanTitle($(config.titleSelector).first().text());
       if (!title) {
         logger.warn(`No title found for: ${url}`);
         return null;
@@ -262,7 +263,7 @@ class HTMLScraper {
 
       return {
         id: uuidv4(),
-        title: title.substring(0, 500),
+        title,
         description,
         content,
         image_url: imageUrl,

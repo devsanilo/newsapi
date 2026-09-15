@@ -38,6 +38,7 @@ router.get("/search", optionalAuth, newsController.searchNews);
 router.get("/search/suggestions", newsController.getSearchSuggestions);
 router.get("/search/keyword", optionalAuth, newsController.searchByKeyword);
 router.get("/trending", optionalAuth, newsController.getTrending);
+router.get("/originals", optionalAuth, newsController.getOriginals);
 router.get("/categories", newsController.getCategories);
 router.get("/sources", newsController.getSources);
 router.get("/stats", newsController.getStats);
