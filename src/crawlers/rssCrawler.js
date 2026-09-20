@@ -19,6 +19,19 @@ const {
 } = require("../utils/cleaner");
 const { toCanonicalCategory } = require("../utils/categories");
 
+// Some feeds expose an image field that is not article photography. Punch is
+// the canonical case: every item carries the same
+// `<enclosure type="image/png">` pointing at their masthead, so before this
+// check every Punch story inherited the logo and the og:image fallback never
+// ran (it only handles articles with NO image).
+const BRAND_ASSET_PATTERNS = [
+  /logo/i,
+  /(^|[/_.-])header[-_.]/i,
+  /placeholder/i,
+  /(^|[/_.-])default[-_]?(image|thumb)/i,
+  /favicon/i,
+];
+
 // Configure RSS parser — keep arrays for media fields so we don't miss nested structures
 const parser = new RSSParser({
   timeout: 25000,
@@ -91,9 +104,12 @@ class RSSCrawler {
         )
         .filter((a) => a !== null);
 
+      // Drop images that clearly are not article photography, so the og:image
+      // fallback below gets a chance to supply the real thing.
+      this._dropUnusableImages(articles, name);
+
       // Fetch og:image for articles that have no image (batch, with concurrency limit)
-      const needImage = articles.filter((a) => !a.image_url);
-      if (needImage.length > 0) {
+      const needImage = articles.filter((a) => !a.image_url);      if (needImage.length > 0) {
         logger.info(
           `Fetching og:image for ${needImage.length} articles from ${name}`,
         );
@@ -354,6 +370,53 @@ class RSSCrawler {
 
     if (!cleaned) return null;
     return cleaned.slice(0, 100);
+  }
+
+  /**
+   * Clear images that are not article photography.
+   *
+   * Two signals:
+   *  1. the same URL on most items of one feed — a feed-wide brand asset
+   *  2. a URL that looks like a logo/header/placeholder/favicon
+   *
+   * Clearing (rather than rewriting) is deliberate: the caller then treats the
+   * item as "no image" and the og:image fallback fetches the real photo.
+   */
+  _dropUnusableImages(articles, feedName) {
+    const counts = new Map();
+    for (const a of articles) {
+      if (!a.image_url) continue;
+      counts.set(a.image_url, (counts.get(a.image_url) || 0) + 1);
+    }
+
+    // Needs enough items to prove a pattern rather than coincidence.
+    const repeatThreshold = Math.max(3, Math.ceil(articles.length * 0.5));
+
+    let dropped = 0;
+    let repeatedCount = 0;
+    let brandCount = 0;
+
+    for (const a of articles) {
+      if (!a.image_url) continue;
+
+      const repeated = (counts.get(a.image_url) || 0) >= repeatThreshold;
+      const brandAsset = BRAND_ASSET_PATTERNS.some((re) => re.test(a.image_url));
+      if (!repeated && !brandAsset) continue;
+
+      if (repeated) repeatedCount += 1;
+      if (brandAsset) brandCount += 1;
+      a.image_url = null;
+      dropped += 1;
+    }
+
+    if (dropped > 0) {
+      logger.info(
+        `Dropped ${dropped} unusable image(s) from ${feedName} ` +
+          `(repeated on >=${repeatThreshold} items: ${repeatedCount}, ` +
+          `brand asset: ${brandCount}) — trying og:image instead`,
+      );
+    }
+    return dropped;
   }
 
   /**
