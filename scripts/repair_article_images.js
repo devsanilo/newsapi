@@ -17,6 +17,9 @@
  * 2. Re-fetches `og:image` from the article page.
  * 3. Updates the row in place (a normal UPDATE, so it actually applies).
  *
+ * The same logic backs the admin "Reload image" action — see
+ * src/services/articleImageService.js. This file is only the CLI around it.
+ *
  * Usage
  * -----
  *   node scripts/repair_article_images.js                 # dry run (default)
@@ -28,10 +31,8 @@
  */
 require("dotenv").config();
 
-const { Op } = require("sequelize");
 const { sequelize } = require("../src/database/connection");
-const { News } = require("../src/models");
-const crawler = require("../src/crawlers/rssCrawler");
+const imageService = require("../src/services/articleImageService");
 const logger = require("../src/utils/logger");
 
 const args = process.argv.slice(2);
@@ -41,78 +42,8 @@ const sourceArg = args.find((a) => a.startsWith("--source="));
 const SOURCE = sourceArg ? sourceArg.split("=")[1] : null;
 const limitArg = args.find((a) => a.startsWith("--limit="));
 const LIMIT = limitArg ? parseInt(limitArg.split("=")[1], 10) : 200;
-const CONCURRENCY = 5;
-
-/** Same signals the crawler uses to reject a feed image. */
-const BRAND_ASSET_PATTERNS = [
-  /logo/i,
-  /(^|[/_.-])header[-_.]/i,
-  /placeholder/i,
-  /(^|[/_.-])default[-_]?(image|thumb)/i,
-  /favicon/i,
-];
-
-function looksLikeBrandAsset(url) {
-  if (!url) return false;
-  return BRAND_ASSET_PATTERNS.some((re) => re.test(url));
-}
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-
-/**
- * Rows whose image is either a brand asset by URL, or one URL shared across
- * several articles from the same source.
- */
-async function findSuspects() {
-  const where = {};
-  if (SOURCE) where.source = SOURCE;
-
-  const rows = await News.findAll({
-    where,
-    attributes: ["id", "title", "url", "source", "image_url"],
-    order: [["published_at", "DESC"]],
-    raw: true,
-  });
-
-  // Count how often each (source, image_url) pair occurs.
-  const pairCounts = new Map();
-  for (const r of rows) {
-    if (!r.image_url) continue;
-    const key = `${r.source}||${r.image_url}`;
-    pairCounts.set(key, (pairCounts.get(key) || 0) + 1);
-  }
-
-  const suspects = [];
-  for (const r of rows) {
-    if (!r.image_url) continue;
-    const shared = pairCounts.get(`${r.source}||${r.image_url}`) || 0;
-    const brand = looksLikeBrandAsset(r.image_url);
-    // 3+ articles from one source on the same URL is a brand asset, not a photo.
-    if (brand || shared >= 3) {
-      suspects.push({ ...r, reason: brand ? "brand-asset-url" : `shared-by-${shared}` });
-    }
-  }
-  return suspects;
-}
-
-async function repairOne(row) {
-  if (!row.url) return { row, status: "no-url" };
-  let candidate = null;
-  try {
-    candidate = await crawler._fetchOgImage(row.url);
-  } catch {
-    return { row, status: "fetch-failed" };
-  }
-
-  if (!candidate) return { row, status: "no-og-image" };
-  if (candidate === row.image_url) return { row, status: "unchanged" };
-  if (looksLikeBrandAsset(candidate)) return { row, status: "og-is-brand-asset" };
-
-  if (DRY_RUN) return { row, status: "would-update", candidate };
-
-  await News.update({ image_url: candidate }, { where: { id: row.id } });
-  return { row, status: "updated", candidate };
-}
+const scanArg = args.find((a) => a.startsWith("--scan="));
+const SCAN = scanArg ? parseInt(scanArg.split("=")[1], 10) : 500;
 
 function short(url) {
   return String(url || "").replace(/^https?:\/\//, "").slice(0, 88);
@@ -126,37 +57,36 @@ async function main() {
       `${SOURCE ? ` — source=${SOURCE}` : ""}\n`,
   );
 
-  const suspects = await findSuspects();
-  const targets = suspects.slice(0, LIMIT);
+  const report = await imageService.repairMany({
+    source: SOURCE,
+    scanLimit: SCAN,
+    limit: LIMIT,
+    persist: APPLY,
+  });
 
-  console.log(`suspect rows : ${suspects.length}`);
-  console.log(`processing   : ${targets.length}\n`);
+  console.log(`rows scanned : ${report.scanned}`);
+  console.log(`suspect rows : ${report.suspects}`);
+  console.log(`processing   : ${report.processed}\n`);
 
-  if (targets.length === 0) {
+  if (report.processed === 0) {
     console.log("Nothing to repair.\n");
     await sequelize.close();
     return;
   }
 
-  const tally = {};
-  for (let i = 0; i < targets.length; i += CONCURRENCY) {
-    const chunk = targets.slice(i, i + CONCURRENCY);
-    const results = await Promise.all(chunk.map(repairOne));
-
-    for (const { row, status, candidate } of results) {
-      tally[status] = (tally[status] || 0) + 1;
-      if (status === "would-update" || status === "updated") {
-        console.log(`[${status}] ${row.source} — ${String(row.title).slice(0, 52)}`);
-        console.log(`     was: ${short(row.image_url)}`);
-        console.log(`     now: ${short(candidate)}\n`);
-      }
-    }
-    await sleep(250);
+  for (const { row, status, candidate } of report.results) {
+    if (status !== "would-update" && status !== "updated") continue;
+    console.log(`[${status}] ${row.source} — ${String(row.title).slice(0, 52)}`);
+    console.log(`     was: ${short(row.image_url)}`);
+    console.log(`     now: ${short(candidate)}\n`);
   }
 
   console.log("summary:");
-  for (const [status, count] of Object.entries(tally).sort()) {
+  for (const [status, count] of Object.entries(report.tally).sort()) {
     console.log(`  ${status.padEnd(20)} ${count}`);
+  }
+  if (report.remaining > 0) {
+    console.log(`\n  ${report.remaining} suspect row(s) left unprocessed — raise --limit.`);
   }
   if (DRY_RUN) {
     console.log("\nRe-run with --apply to write these changes.\n");

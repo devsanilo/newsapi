@@ -12,9 +12,22 @@ const logger = require("../utils/logger");
 const { v4: uuidv4 } = require("uuid");
 const { generateHash } = require("../utils/hash");
 const { toCanonicalCategory } = require("../utils/categories");
+const imageService = require("../services/articleImageService");
 const { decodeEntities, cleanTitle, cleanDescription } = require("../utils/cleaner");
 
 const PAGE_SIZE = 20;
+
+/** Human-readable outcomes for the image-reload endpoint. */
+const IMAGE_REFRESH_MESSAGES = {
+  updated: "Image updated from the source page.",
+  "would-update": "A better image is available (dry run, nothing written).",
+  unchanged: "The stored image already matches the source page.",
+  "no-url": "This article has no source URL to fetch from.",
+  "no-og-image": "The source page exposes no og:image.",
+  "fetch-failed": "Could not reach the source page.",
+  "og-is-brand-asset":
+    "The source page's og:image is itself a brand asset, so it was rejected.",
+};
 
 function toArrayTags(input) {
   if (!input) return [];
@@ -635,6 +648,102 @@ async function createArticle(req, res) {
 }
 
 /**
+ * POST /api/admin/articles/:id/refresh-image — re-fetch the lead image
+ *
+ * Aggregated articles store whatever the feed handed us, and ingestion uses
+ * INSERT IGNORE, so a row that was saved with the publisher's masthead keeps
+ * it forever. This re-reads og:image from the source page and updates the row.
+ * Unlike PATCH /articles/:id it works on aggregated articles too.
+ */
+async function refreshArticleImage(req, res) {
+  try {
+    const persist = req.body?.dryRun !== true;
+    const result = await imageService.refreshArticleImageById(req.params.id, {
+      persist,
+    });
+
+    if (result.status === "not-found") {
+      return res
+        .status(404)
+        .json({ success: false, message: "Article not found" });
+    }
+
+    res.json({
+      success: result.changed,
+      status: result.status,
+      message: IMAGE_REFRESH_MESSAGES[result.status] || "Image not updated",
+      data: {
+        id: req.params.id,
+        previous_image_url: result.previous ?? null,
+        image_url: result.candidate || result.previous || null,
+      },
+    });
+  } catch (err) {
+    logger.error("admin.refreshArticleImage error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * POST /api/admin/articles/refresh-images — repair a batch of suspect rows
+ *
+ * Body: { source?, limit?, dryRun?, scanLimit? }
+ * Runs synchronously with a bounded limit so the request stays responsive.
+ */
+async function refreshArticleImages(req, res) {
+  try {
+    const body = req.body || {};
+    const source = body.source ? String(body.source).trim().toLowerCase() : null;
+    const persist = body.dryRun !== true;
+    // Cap the batch so a single request cannot run for minutes.
+    const limit = Math.min(Math.max(parseInt(body.limit, 10) || 25, 1), 100);
+    const scanLimit = Math.min(
+      Math.max(parseInt(body.scanLimit, 10) || 500, 50),
+      3000,
+    );
+
+    const report = await imageService.repairMany({
+      source,
+      scanLimit,
+      limit,
+      persist,
+    });
+
+    logger.info(
+      `admin.refreshArticleImages ${persist ? "applied" : "dry-run"}` +
+        `${source ? ` source=${source}` : ""} — scanned=${report.scanned} ` +
+        `suspects=${report.suspects} processed=${report.processed}`,
+    );
+
+    res.json({
+      success: true,
+      dry_run: !persist,
+      data: {
+        scanned: report.scanned,
+        suspects: report.suspects,
+        processed: report.processed,
+        remaining: report.remaining,
+        tally: report.tally,
+        // A few examples so the operator can sanity-check what changed.
+        samples: report.results
+          .filter((r) => r.status === "updated" || r.status === "would-update")
+          .slice(0, 20)
+          .map((r) => ({
+            id: r.row.id,
+            title: decodeEntities(r.row.title),
+            source: r.row.source,
+            previous_image_url: r.previous,
+            image_url: r.candidate,
+          })),
+      },
+    });
+  } catch (err) {
+    logger.error("admin.refreshArticleImages error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
  * GET /api/admin/articles/:id — fetch a single article for editor use
  */
 async function getArticle(req, res) {
@@ -796,6 +905,7 @@ async function getArticles(req, res) {
 
     const [rows] = await sequelize.query(
       `SELECT n.id, n.title, n.source, n.category, n.published_at,
+              n.image_url, n.url,
               n.is_original, n.is_published, n.author_id, n.updated_at,
               u.name AS author_name,
               COALESCE(i.cnt,0) AS impressions_count,
@@ -821,26 +931,66 @@ async function getArticles(req, res) {
       { replacements: { ...params } },
     );
 
+    // One URL reused by several articles from a source is a brand asset. The
+    // windowed count only needs the pairs on this page, so a single grouped
+    // query is enough — no correlated subquery per row.
+    const sharedCounts = new Map();
+    const pairs = [
+      ...new Set(
+        rows
+          .filter((r) => r.image_url)
+          .map((r) => `${r.source}||${r.image_url}`),
+      ),
+    ];
+    if (pairs.length > 0) {
+      const sources = [...new Set(rows.map((r) => r.source))];
+      const images = [...new Set(rows.map((r) => r.image_url).filter(Boolean))];
+      const [counts] = await sequelize.query(
+        `SELECT source, image_url, COUNT(*) AS cnt
+           FROM news
+          WHERE source IN (:sources) AND image_url IN (:images)
+          GROUP BY source, image_url`,
+        { replacements: { sources, images } },
+      );
+      for (const c of counts) {
+        sharedCounts.set(`${c.source}||${c.image_url}`, Number(c.cnt || 0));
+      }
+    }
+
     const totalCount = Number(total || 0);
     res.json({
       success: true,
-      data: rows.map((r) => ({
-        id: r.id,
-        title: decodeEntities(r.title),
-        source: r.source,
-        category: r.category,
-        is_original: Boolean(r.is_original),
-        is_published: Boolean(r.is_published),
-        author_id: r.author_id,
-        author_name: r.author_name,
-        published_at: r.published_at,
-        updated_at: r.updated_at,
-        impressions_count: Number(r.impressions_count || 0),
-        reactions_count: Number(r.reactions_count || 0),
-        bookmarks_count: Number(r.bookmarks_count || 0),
-        comments_count: Number(r.comments_count || 0),
-        likes_count: Number(r.likes_count || 0),
-      })),
+      data: rows.map((r) => {
+        const shared = r.image_url
+          ? sharedCounts.get(`${r.source}||${r.image_url}`) || 0
+          : 0;
+        const brandAsset = imageService.looksLikeBrandAsset(r.image_url);
+        return {
+          id: r.id,
+          title: decodeEntities(r.title),
+          source: r.source,
+          category: r.category,
+          image_url: r.image_url || null,
+          url: r.url || null,
+          image_shared_count: shared,
+          // True when the lead image is a brand asset, or one URL is reused
+          // across this source — either way the real photo is missing.
+          image_needs_repair: Boolean(
+            r.url && (brandAsset || shared >= imageService.SHARED_IMAGE_THRESHOLD),
+          ),
+          is_original: Boolean(r.is_original),
+          is_published: Boolean(r.is_published),
+          author_id: r.author_id,
+          author_name: r.author_name,
+          published_at: r.published_at,
+          updated_at: r.updated_at,
+          impressions_count: Number(r.impressions_count || 0),
+          reactions_count: Number(r.reactions_count || 0),
+          bookmarks_count: Number(r.bookmarks_count || 0),
+          comments_count: Number(r.comments_count || 0),
+          likes_count: Number(r.likes_count || 0),
+        };
+      }),
       pagination: {
         page,
         limit,
@@ -866,6 +1016,8 @@ module.exports = {
   getArticle,
   createArticle,
   updateArticle,
+  refreshArticleImage,
+  refreshArticleImages,
   publishArticle,
   deleteArticle,
 };

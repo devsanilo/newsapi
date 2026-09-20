@@ -29,6 +29,10 @@ router.delete("/users/:id", adminController.deleteUser);
 router.get("/articles", adminController.getArticles);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);
+// Lead-image repair. Registered before the ":id" routes so the literal path is
+// not swallowed by a parameter match.
+router.post("/articles/refresh-images", adminController.refreshArticleImages);
+router.post("/articles/:id/refresh-image", adminController.refreshArticleImage);
 router.patch("/articles/:id", adminController.updateArticle);
 router.post("/articles/:id/publish", adminController.publishArticle);
 router.delete("/articles/:id", adminController.deleteArticle);
