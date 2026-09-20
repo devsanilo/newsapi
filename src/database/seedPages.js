@@ -9,34 +9,51 @@ const { sequelize } = require("../database/connection");
 const defaultPages = [
   {
     slug: "about",
-    title: "About Noozia",
+    title: "About Trenxi",
     meta_description:
-      "Learn about Noozia — the smart news aggregator that delivers curated stories from trusted sources worldwide.",
+      "Meet Trenxi — your calm, personalized space for trusted news, deeper context, and everyday clarity.",
     content: `
-<h2>⚡ What We Do</h2>
-<p>We aggregate news from dozens of reputable sources, organize them by topic, and personalize your feed based on your reading habits. No algorithms designed to outrage — just the stories that matter to you.</p>
+<section>
+  <p><strong>Trenxi was built for people who want to stay informed without feeling overwhelmed.</strong></p>
+  <p>Every day, headlines move fast. Our job is to slow the chaos down and help you focus on what matters. We bring together stories from trusted publishers, organize them into clear topics, and shape your feed around what you genuinely read and care about.</p>
+  <p>Alongside trusted reporting from around the world, we also publish original pieces from our own editorial desk, so you get thoughtful context and fresh perspective in one place.</p>
+</section>
 
-<h2>🎯 Our Mission</h2>
-<p>To make staying informed effortless. We believe everyone deserves access to quality journalism without the noise, clickbait, or information overload that plagues most news platforms.</p>
+<section>
+  <h2>Our Mission</h2>
+  <p>We believe quality journalism should be easy to reach, easy to understand, and easy to return to. No endless noise. No attention traps. Just meaningful stories, delivered in a cleaner and more personal experience.</p>
+</section>
 
-<h2>🚀 Features</h2>
-<ul>
-  <li>Personalized "For You" feed powered by your reading preferences</li>
-  <li>Real-time trending topics and articles</li>
-  <li>AI-powered article summaries</li>
-  <li>Reading streaks and gamification badges</li>
-  <li>Dark mode for comfortable reading</li>
-  <li>Bookmark collections to organize saved articles</li>
-  <li>Push notifications for breaking news</li>
-  <li>Works offline as a Progressive Web App</li>
-</ul>
+<section>
+  <h2>What Makes Trenxi Different</h2>
+  <ul>
+    <li><strong>Personal, not chaotic:</strong> your For You feed learns from your reading habits and preferences.</li>
+    <li><strong>Signal over noise:</strong> we prioritize clarity, relevance, and readability.</li>
+    <li><strong>Real-time trends:</strong> see what the world is talking about right now.</li>
+    <li><strong>AI summaries:</strong> get the key points quickly before diving deeper.</li>
+    <li><strong>Save and organize:</strong> keep important stories in bookmark collections.</li>
+    <li><strong>Reading streaks and badges:</strong> build a consistent habit and track progress.</li>
+    <li><strong>Cross-device comfort:</strong> dark mode, push notifications, and offline-ready PWA support.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Our Editorial Approach</h2>
+  <p>Trenxi does not replace publishers. We help you discover them. We prioritize credible sources, preserve links to original reporting, and keep transparency at the center of how stories are presented.</p>
+</section>
+
+<section>
+  <h2>Built for Everyday Readers</h2>
+  <p>Whether you check headlines in two minutes or explore long reads on weekends, Trenxi is designed to fit your rhythm, not hijack it.</p>
+  <p><em>Stay informed. Stay curious. Stay in control.</em></p>
+</section>
     `.trim(),
   },
   {
     slug: "privacy",
     title: "Privacy Policy",
     meta_description:
-      "Noozia Privacy Policy — how we collect, use, and protect your personal information.",
+      "Trenxi Privacy Policy — how we collect, use, and protect your personal information.",
     content: `
 <h2>1. Information We Collect</h2>
 <p><strong>Account Information:</strong> When you create an account, we collect your name, email address, and password (stored securely using bcrypt hashing).</p>
@@ -76,13 +93,13 @@ const defaultPages = [
     slug: "terms",
     title: "Terms of Service",
     meta_description:
-      "Noozia Terms of Service — the rules and guidelines governing your use of our platform.",
+      "Trenxi Terms of Service — the rules and guidelines governing your use of our platform.",
     content: `
 <h2>1. Acceptance of Terms</h2>
-<p>By accessing or using Noozia, you agree to be bound by these Terms of Service. If you do not agree, please do not use our service.</p>
+<p>By accessing or using Trenxi, you agree to be bound by these Terms of Service. If you do not agree, please do not use our service.</p>
 
 <h2>2. Description of Service</h2>
-<p>Noozia is a news aggregation platform that collects and displays articles from various third-party sources. We do not create original news content. All articles link back to their original publishers.</p>
+<p>Trenxi is a news discovery platform that brings together articles from various third-party sources alongside original content produced by our editorial team. Third-party articles link back to their original publishers.</p>
 
 <h2>3. User Accounts</h2>
 <p>You are responsible for maintaining the confidentiality of your account credentials. You must provide accurate information when creating an account and notify us immediately of any unauthorized use.</p>
@@ -98,13 +115,13 @@ const defaultPages = [
 </ul>
 
 <h2>5. Intellectual Property</h2>
-<p>News articles displayed on Noozia are the property of their respective publishers. The Noozia platform, design, and features are the property of Noozia and protected by applicable laws.</p>
+<p>News articles displayed on Trenxi are the property of their respective publishers. The Trenxi platform, design, and features are the property of Trenxi and protected by applicable laws.</p>
 
 <h2>6. Content Disclaimer</h2>
-<p>We aggregate content from third-party sources and are not responsible for the accuracy, completeness, or reliability of any news articles. We encourage users to verify information with original sources.</p>
+<p>We display content from third-party sources and are not responsible for the accuracy, completeness, or reliability of any news articles. We encourage users to verify information with original sources.</p>
 
 <h2>7. Limitation of Liability</h2>
-<p>Noozia is provided "as is" without warranties of any kind. We shall not be liable for any indirect, incidental, or consequential damages arising from your use of the service.</p>
+<p>Trenxi is provided "as is" without warranties of any kind. We shall not be liable for any indirect, incidental, or consequential damages arising from your use of the service.</p>
 
 <h2>8. Termination</h2>
 <p>We reserve the right to suspend or terminate your account at any time for violations of these terms. You may also delete your account at any time from your Profile settings.</p>
@@ -120,12 +137,12 @@ const defaultPages = [
     slug: "contact",
     title: "Contact Us",
     meta_description:
-      "Get in touch with the Noozia team — we'd love to hear your feedback, questions, or bug reports.",
+      "Get in touch with the Trenxi team — we'd love to hear your feedback, questions, or bug reports.",
     content: `
 <p>Have feedback, a question, or found a bug? We'd love to hear from you.</p>
 
 <h2>📧 Email</h2>
-<p>support@noozia.app</p>
+<p>support@trenxi.com</p>
 
 <h2>📍 Location</h2>
 <p>San Francisco, CA</p>
@@ -161,4 +178,11 @@ async function seed() {
   }
 }
 
-seed();
+// Only run the CLI seeder when executed directly (`node src/database/seedPages.js`).
+// Requiring this module must not touch the database or exit the process —
+// connection.js reuses `defaultPages` for first-boot seeding.
+if (require.main === module) {
+  seed();
+}
+
+module.exports = { defaultPages, seed };
