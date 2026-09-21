@@ -38,6 +38,13 @@ AdSetting.KEYS = {
   // Global settings
   ADS_ENABLED: "ads_enabled",
 
+  // Per-platform switches. The master switch above gates all three, so this
+  // lets an operator pull ads from one surface (say the website, pending a
+  // review) without touching the apps.
+  WEB_ENABLED: "web_enabled",
+  ANDROID_ENABLED: "android_enabled",
+  IOS_ENABLED: "ios_enabled",
+
   // Mobile Android
   ANDROID_BANNER_ID: "android_banner_id",
   ANDROID_INTERSTITIAL_ID: "android_interstitial_id",
@@ -83,6 +90,22 @@ AdSetting.getValue = async function (key, defaultValue = null) {
   return setting.value ?? defaultValue;
 };
 
+/**
+ * Read a boolean flag.
+ *
+ * Deliberately not built on getValue: for a flag, a row that is switched off
+ * must mean "false", whereas getValue treats a disabled row as "fall back to
+ * the default" — which for a switch defaulting to true would turn it back on.
+ * A flag is therefore on only when the row exists, is enabled, and its value
+ * is "true", so the row toggle and the value always agree.
+ */
+AdSetting.getFlag = function (settings, key, defaultValue = true) {
+  const row = settings ? settings[key] : undefined;
+  if (!row) return defaultValue;
+  if (row.isEnabled === false) return false;
+  return String(row.value ?? "").toLowerCase() === "true";
+};
+
 // Set a setting value
 AdSetting.setValue = async function (key, value, description = null) {
   const [setting, created] = await this.findOrCreate({
@@ -106,6 +129,21 @@ AdSetting.initializeDefaults = async function () {
       key: this.KEYS.ADS_ENABLED,
       value: "true",
       description: "Master switch for all ads",
+    },
+    {
+      key: this.KEYS.WEB_ENABLED,
+      value: "true",
+      description: "Serve ads on the website (AdSense)",
+    },
+    {
+      key: this.KEYS.ANDROID_ENABLED,
+      value: "true",
+      description: "Serve ads in the Android app (AdMob)",
+    },
+    {
+      key: this.KEYS.IOS_ENABLED,
+      value: "true",
+      description: "Serve ads in the iOS app (AdMob)",
     },
     {
       key: this.KEYS.MOBILE_INTERSTITIAL_FREQUENCY,

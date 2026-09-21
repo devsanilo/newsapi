@@ -6,6 +6,22 @@ const AdSetting = require("../models/AdSetting");
 const logger = require("../utils/logger");
 
 /**
+ * A unit is served only when its row is enabled AND carries a value. That lets
+ * an operator park a unit — keep the ID on file, stop serving it — instead of
+ * clearing the field and losing the value.
+ */
+function unitValue(settings, key) {
+  const row = settings[key];
+  if (!row || row.isEnabled === false) return "";
+  return row.value || "";
+}
+
+/** Shorthand for a boolean setting. */
+function flag(settings, key, fallback = true) {
+  return AdSetting.getFlag(settings, key, fallback);
+}
+
+/**
  * GET /api/ad-settings — admin
  * Get all ad settings
  */
@@ -24,43 +40,44 @@ async function getAllSettings(req, res) {
 /**
  * GET /api/ad-settings/mobile — public (for mobile app)
  * Get ad configuration for mobile app
+ *
+ * Returns a per-platform `enabled` flag as well as the master one, because the
+ * Android and iOS switches are independent. `enabled` is kept for older app
+ * builds that only understand the master switch.
  */
 async function getMobileSettings(req, res) {
   try {
-    const adsEnabled = await AdSetting.getValue(
-      AdSetting.KEYS.ADS_ENABLED,
-      "true",
-    );
+    const settings = await AdSetting.getAllSettings();
+    const master = flag(settings, AdSetting.KEYS.ADS_ENABLED);
 
-    if (adsEnabled !== "true") {
+    if (!master) {
       return res.json({
         success: true,
-        data: {
-          enabled: false,
-        },
+        data: { enabled: false, android: { enabled: false }, ios: { enabled: false } },
       });
     }
 
-    const settings = await AdSetting.getAllSettings();
+    const androidEnabled = flag(settings, AdSetting.KEYS.ANDROID_ENABLED);
+    const iosEnabled = flag(settings, AdSetting.KEYS.IOS_ENABLED);
+
+    const unitIds = (prefix, enabled) =>
+      enabled
+        ? {
+            bannerId: unitValue(settings, AdSetting.KEYS[`${prefix}_BANNER_ID`]),
+            interstitialId: unitValue(settings, AdSetting.KEYS[`${prefix}_INTERSTITIAL_ID`]),
+            rewardedId: unitValue(settings, AdSetting.KEYS[`${prefix}_REWARDED_ID`]),
+            nativeId: unitValue(settings, AdSetting.KEYS[`${prefix}_NATIVE_ID`]),
+          }
+        : // No IDs when a platform is off, so a client that ignores `enabled`
+          // still has nothing to request.
+          { bannerId: "", interstitialId: "", rewardedId: "", nativeId: "" };
 
     res.json({
       success: true,
       data: {
-        enabled: true,
-        android: {
-          bannerId: settings[AdSetting.KEYS.ANDROID_BANNER_ID]?.value || "",
-          interstitialId:
-            settings[AdSetting.KEYS.ANDROID_INTERSTITIAL_ID]?.value || "",
-          rewardedId: settings[AdSetting.KEYS.ANDROID_REWARDED_ID]?.value || "",
-          nativeId: settings[AdSetting.KEYS.ANDROID_NATIVE_ID]?.value || "",
-        },
-        ios: {
-          bannerId: settings[AdSetting.KEYS.IOS_BANNER_ID]?.value || "",
-          interstitialId:
-            settings[AdSetting.KEYS.IOS_INTERSTITIAL_ID]?.value || "",
-          rewardedId: settings[AdSetting.KEYS.IOS_REWARDED_ID]?.value || "",
-          nativeId: settings[AdSetting.KEYS.IOS_NATIVE_ID]?.value || "",
-        },
+        enabled: androidEnabled || iosEnabled,
+        android: { enabled: androidEnabled, ...unitIds("ANDROID", androidEnabled) },
+        ios: { enabled: iosEnabled, ...unitIds("IOS", iosEnabled) },
         interstitialFrequency: parseInt(
           settings[AdSetting.KEYS.MOBILE_INTERSTITIAL_FREQUENCY]?.value || "5",
         ),
@@ -81,35 +98,33 @@ async function getMobileSettings(req, res) {
 /**
  * GET /api/ad-settings/web — public (for web app)
  * Get AdSense configuration for the website
+ *
+ * `enabled` is false when the master switch or the web switch is off, and a
+ * slot is omitted entirely when its own row is switched off — AdSlot already
+ * renders nothing unless it has a slot ID.
  */
 async function getWebSettings(req, res) {
   try {
-    const adsEnabled = await AdSetting.getValue(
-      AdSetting.KEYS.ADS_ENABLED,
-      "true",
-    );
-
-    if (adsEnabled !== "true") {
-      return res.json({
-        success: true,
-        data: { enabled: false },
-      });
-    }
-
     const settings = await AdSetting.getAllSettings();
+    const master = flag(settings, AdSetting.KEYS.ADS_ENABLED);
+    const webEnabled = flag(settings, AdSetting.KEYS.WEB_ENABLED);
+
+    if (!master || !webEnabled) {
+      return res.json({ success: true, data: { enabled: false } });
+    }
 
     res.json({
       success: true,
       data: {
         enabled: true,
         clientId:
-          settings[AdSetting.KEYS.ADSENSE_CLIENT_ID]?.value ||
+          unitValue(settings, AdSetting.KEYS.ADSENSE_CLIENT_ID) ||
           process.env.ADSENSE_CLIENT_ID ||
           "ca-pub-8008635097866263",
         slots: {
-          banner: settings[AdSetting.KEYS.ADSENSE_SLOT_BANNER]?.value || "",
-          sidebar: settings[AdSetting.KEYS.ADSENSE_SLOT_SIDEBAR]?.value || "",
-          infeed: settings[AdSetting.KEYS.ADSENSE_SLOT_INFEED]?.value || "",
+          banner: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_BANNER),
+          sidebar: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_SIDEBAR),
+          infeed: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_INFEED),
         },
       },
     });
