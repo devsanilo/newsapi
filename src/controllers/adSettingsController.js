@@ -6,6 +6,13 @@ const AdSetting = require("../models/AdSetting");
 const logger = require("../utils/logger");
 
 /**
+ * Google's published sample ad units, e.g.
+ * ca-app-pub-3940256099942544/6300978111. AdMob refuses to serve real
+ * inventory to them, so anything they display is unmonetised.
+ */
+const SAMPLE_UNIT_PREFIX = "ca-app-pub-3940256099942544/";
+
+/**
  * A unit is served only when its row is enabled AND carries a value. That lets
  * an operator park a unit — keep the ID on file, stop serving it — instead of
  * clearing the field and losing the value.
@@ -14,6 +21,22 @@ function unitValue(settings, key) {
   const row = settings[key];
   if (!row || row.isEnabled === false) return "";
   return row.value || "";
+}
+
+/**
+ * A stored sample unit is only honoured while test mode is on; otherwise it
+ * counts as unconfigured.
+ *
+ * This is what makes the test/production switch authoritative. Leftover sample
+ * IDs used to be indistinguishable from real ones, so a project with samples in
+ * the table quietly served test ads with test mode off — earning nothing while
+ * looking like it worked.
+ */
+function mobileUnitValue(settings, key, testMode) {
+  const value = unitValue(settings, key);
+  if (!value) return "";
+  if (!testMode && value.startsWith(SAMPLE_UNIT_PREFIX)) return "";
+  return value;
 }
 
 /** Shorthand for a boolean setting. */
@@ -69,16 +92,19 @@ async function getMobileSettings(req, res) {
     // While test mode is on the configured IDs are withheld, so a client that
     // ignores the flag falls back to its own sample units rather than quietly
     // serving production inventory from a build nobody meant to ship.
+    // With test mode on every ID is withheld, so a client that ignores the flag
+    // has nothing real to request. With it off, only genuine production units
+    // are returned.
     const unitIds = (prefix, enabled) =>
       enabled && !testMode
         ? {
-            bannerId: unitValue(settings, AdSetting.KEYS[`${prefix}_BANNER_ID`]),
-            interstitialId: unitValue(settings, AdSetting.KEYS[`${prefix}_INTERSTITIAL_ID`]),
-            rewardedId: unitValue(settings, AdSetting.KEYS[`${prefix}_REWARDED_ID`]),
-            nativeId: unitValue(settings, AdSetting.KEYS[`${prefix}_NATIVE_ID`]),
+            bannerId: mobileUnitValue(settings, AdSetting.KEYS[`${prefix}_BANNER_ID`], testMode),
+            interstitialId: mobileUnitValue(settings, AdSetting.KEYS[`${prefix}_INTERSTITIAL_ID`], testMode),
+            rewardedId: mobileUnitValue(settings, AdSetting.KEYS[`${prefix}_REWARDED_ID`], testMode),
+            nativeId: mobileUnitValue(settings, AdSetting.KEYS[`${prefix}_NATIVE_ID`], testMode),
           }
-        : // No IDs when a platform is off or in test mode, so a client that
-          // ignores the flags still has nothing real to request.
+        : // No IDs when a platform is off, so a client that ignores `enabled`
+          // still has nothing to request.
           { bannerId: "", interstitialId: "", rewardedId: "", nativeId: "" };
 
     res.json({
