@@ -45,6 +45,10 @@ AdSetting.KEYS = {
   ANDROID_ENABLED: "android_enabled",
   IOS_ENABLED: "ios_enabled",
 
+  // Serve Google's sample ad units instead of the configured ones. AdMob only;
+  // AdSense has no equivalent, so the website is unaffected.
+  ADS_TEST_MODE: "ads_test_mode",
+
   // Mobile Android
   ANDROID_BANNER_ID: "android_banner_id",
   ANDROID_INTERSTITIAL_ID: "android_interstitial_id",
@@ -144,6 +148,14 @@ AdSetting.initializeDefaults = async function () {
       key: this.KEYS.IOS_ENABLED,
       value: "true",
       description: "Serve ads in the iOS app (AdMob)",
+    },
+    {
+      key: this.KEYS.ADS_TEST_MODE,
+      // Defaults to off so the configured unit IDs are used as-is. Turning it
+      // on makes the apps request Google's sample units, which serve real-looking
+      // ads and record no revenue.
+      value: "false",
+      description: "Use Google's sample AdMob ad units instead of the configured ones",
     },
     {
       key: this.KEYS.MOBILE_INTERSTITIAL_FREQUENCY,

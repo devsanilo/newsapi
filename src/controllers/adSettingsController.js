@@ -53,29 +53,39 @@ async function getMobileSettings(req, res) {
     if (!master) {
       return res.json({
         success: true,
-        data: { enabled: false, android: { enabled: false }, ios: { enabled: false } },
+        data: {
+          enabled: false,
+          testMode: false,
+          android: { enabled: false },
+          ios: { enabled: false },
+        },
       });
     }
 
     const androidEnabled = flag(settings, AdSetting.KEYS.ANDROID_ENABLED);
     const iosEnabled = flag(settings, AdSetting.KEYS.IOS_ENABLED);
+    const testMode = flag(settings, AdSetting.KEYS.ADS_TEST_MODE, false);
 
+    // While test mode is on the configured IDs are withheld, so a client that
+    // ignores the flag falls back to its own sample units rather than quietly
+    // serving production inventory from a build nobody meant to ship.
     const unitIds = (prefix, enabled) =>
-      enabled
+      enabled && !testMode
         ? {
             bannerId: unitValue(settings, AdSetting.KEYS[`${prefix}_BANNER_ID`]),
             interstitialId: unitValue(settings, AdSetting.KEYS[`${prefix}_INTERSTITIAL_ID`]),
             rewardedId: unitValue(settings, AdSetting.KEYS[`${prefix}_REWARDED_ID`]),
             nativeId: unitValue(settings, AdSetting.KEYS[`${prefix}_NATIVE_ID`]),
           }
-        : // No IDs when a platform is off, so a client that ignores `enabled`
-          // still has nothing to request.
+        : // No IDs when a platform is off or in test mode, so a client that
+          // ignores the flags still has nothing real to request.
           { bannerId: "", interstitialId: "", rewardedId: "", nativeId: "" };
 
     res.json({
       success: true,
       data: {
         enabled: androidEnabled || iosEnabled,
+        testMode,
         android: { enabled: androidEnabled, ...unitIds("ANDROID", androidEnabled) },
         ios: { enabled: iosEnabled, ...unitIds("IOS", iosEnabled) },
         interstitialFrequency: parseInt(
