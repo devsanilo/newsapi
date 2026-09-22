@@ -5,6 +5,7 @@
 const cron = require("node-cron");
 const { addCrawlJob, cleanQueues } = require("./queue");
 const CrawlerSchedule = require("../models/CrawlerSchedule");
+const { purgeDueRequests } = require("../services/accountDeletionService");
 const logger = require("../utils/logger");
 
 const ENV_CRON_SCHEDULE = normalizeSchedule(process.env.CRON_SCHEDULE);
@@ -12,6 +13,7 @@ const DEFAULT_CRON_SCHEDULE = ENV_CRON_SCHEDULE || "*/5 * * * *";
 
 let scheduledTask = null;
 let cleanupTask = null;
+let deletionPurgeTask = null;
 
 const runtimeState = {
   cron_schedule: DEFAULT_CRON_SCHEDULE,
@@ -120,6 +122,33 @@ function ensureCleanupSchedule() {
   logger.info("Cleanup scheduled daily at 3:00 AM");
 }
 
+/**
+ * Erase accounts whose retention window has elapsed.
+ *
+ * This is what makes the published "erased within N days" promise true without
+ * anyone remembering to act. It runs on the same node-cron instance as the rest
+ * of the scheduler, so it only exists in whichever process calls
+ * `startScheduler()` — the scheduler/worker, not every web replica.
+ */
+function ensureDeletionPurgeSchedule() {
+  if (deletionPurgeTask) return;
+
+  // Half past the hour rather than on it, so this does not run alongside the
+  // queue cleanup above — that one is Redis-bound, this one is DB-bound.
+  deletionPurgeTask = cron.schedule("30 3 * * *", async () => {
+    logger.info("Cron: Purging accounts past their erasure window...");
+    try {
+      const result = await purgeDueRequests();
+      logger.info(
+        `Cron: Erasure purge complete — scanned ${result.scanned}, erased ${result.erased}, failed ${result.failed}`,
+      );
+    } catch (error) {
+      logger.error(`Cron: Erasure purge failed: ${error.message}`);
+    }
+  });
+  logger.info("Account erasure purge scheduled daily at 3:30 AM");
+}
+
 function startMainSchedule(schedule) {
   stopMainScheduleOnly();
 
@@ -165,6 +194,7 @@ async function startScheduler() {
   runtimeState.updated_at = config.updated_at;
 
   ensureCleanupSchedule();
+  ensureDeletionPurgeSchedule();
 
   if (runtimeState.is_enabled) {
     startMainSchedule(runtimeState.cron_schedule);
@@ -185,6 +215,11 @@ function stopScheduler() {
     cleanupTask.stop();
     cleanupTask = null;
     logger.info("Cleanup scheduler stopped");
+  }
+  if (deletionPurgeTask) {
+    deletionPurgeTask.stop();
+    deletionPurgeTask = null;
+    logger.info("Erasure purge scheduler stopped");
   }
 }
 
@@ -213,6 +248,7 @@ async function getSchedulerState() {
     updated_at: config.updated_at,
     has_main_task: Boolean(scheduledTask),
     has_cleanup_task: Boolean(cleanupTask),
+    has_deletion_purge_task: Boolean(deletionPurgeTask),
   };
 }
 
@@ -235,6 +271,7 @@ async function updateSchedulerConfig({
   runtimeState.updated_at = config.updated_at.toISOString();
 
   ensureCleanupSchedule();
+  ensureDeletionPurgeSchedule();
   if (runtimeState.is_enabled) {
     startMainSchedule(runtimeState.cron_schedule);
   } else {

@@ -26,6 +26,13 @@ router.get("/users", adminController.getUsers);
 router.patch("/users/:id", adminController.updateUser);
 router.delete("/users/:id", adminController.deleteUser);
 
+// Account deletion requests filed from /account/delete on the web app.
+router.get("/deletion-requests", adminController.getDeletionRequests);
+router.post(
+  "/deletion-requests/:id/erase",
+  adminController.eraseDeletionRequest,
+);
+
 router.get("/articles", adminController.getArticles);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);

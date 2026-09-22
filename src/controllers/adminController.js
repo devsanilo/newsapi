@@ -5,6 +5,7 @@
 const { Op } = require("sequelize");
 const { sequelize } = require("../database/connection");
 const User = require("../models/User");
+const AccountDeletionRequest = require("../models/AccountDeletionRequest");
 const News = require("../models/News");
 const Setting = require("../models/Setting");
 const emailService = require("../services/emailService");
@@ -13,6 +14,11 @@ const { v4: uuidv4 } = require("uuid");
 const { generateHash } = require("../utils/hash");
 const { toCanonicalCategory } = require("../utils/categories");
 const imageService = require("../services/articleImageService");
+const {
+  ERASURE_WINDOW_DAYS,
+  daysRemaining,
+  eraseRequest,
+} = require("../services/accountDeletionService");
 const { decodeEntities, cleanTitle, cleanDescription } = require("../utils/cleaner");
 
 const PAGE_SIZE = 20;
@@ -195,6 +201,92 @@ async function deleteUser(req, res) {
     res.json({ success: true, message: "User deleted" });
   } catch (err) {
     logger.error("admin.deleteUser error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * GET /api/admin/deletion-requests — pending requests + recently erased.
+ *
+ * Split into two lists rather than one ordered list: "waiting" and "done" are
+ * read for different reasons, and sorting a single list by status to separate
+ * them only invites a subtle ordering bug.
+ */
+async function getDeletionRequests(req, res) {
+  try {
+    const [pending, completed] = await Promise.all([
+      AccountDeletionRequest.findAll({
+        where: { status: "pending" },
+        // Oldest first: those are the ones closest to their deadline.
+        order: [["requested_at", "ASC"]],
+      }),
+      AccountDeletionRequest.findAll({
+        where: { status: "completed" },
+        order: [["processed_at", "DESC"]],
+        limit: 25,
+      }),
+    ]);
+
+    const now = new Date();
+    const shape = (request, withRemaining) => ({
+      id: request.id,
+      userId: request.user_id,
+      email: request.email,
+      reason: request.reason,
+      status: request.status,
+      requestedAt: request.requested_at,
+      processedAt: request.processed_at,
+      // A pending row's account is already deactivated, so this is how long
+      // until the data itself goes — not how long until deletion "starts".
+      daysRemaining: withRemaining ? daysRemaining(request, now) : 0,
+    });
+
+    res.json({
+      success: true,
+      data: {
+        erasureWindowDays: ERASURE_WINDOW_DAYS,
+        pending: pending.map((request) => shape(request, true)),
+        completed: completed.map((request) => shape(request, false)),
+      },
+    });
+  } catch (err) {
+    logger.error("admin.getDeletionRequests error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * POST /api/admin/deletion-requests/:id/erase — erase ahead of the window.
+ *
+ * For when someone asks for their data gone now rather than in a month. The
+ * scheduled purge would reach the same row eventually.
+ */
+async function eraseDeletionRequest(req, res) {
+  try {
+    const request = await AccountDeletionRequest.findByPk(req.params.id);
+    if (!request) {
+      return res
+        .status(404)
+        .json({ success: false, message: "Request not found" });
+    }
+    if (request.status !== "pending") {
+      return res.status(409).json({
+        success: false,
+        message: `Request is already ${request.status}.`,
+      });
+    }
+    if (request.user_id === req.user.id) {
+      return res.status(400).json({
+        success: false,
+        message: "You cannot erase your own account from here.",
+      });
+    }
+
+    await eraseRequest(request, { processedBy: req.user.id });
+
+    res.json({ success: true, message: "Account erased" });
+  } catch (err) {
+    logger.error("admin.eraseDeletionRequest error:", err);
     res.status(500).json({ success: false, message: "Server error" });
   }
 }
@@ -1010,6 +1102,8 @@ module.exports = {
   getUsers,
   updateUser,
   deleteUser,
+  getDeletionRequests,
+  eraseDeletionRequest,
   getAnalytics,
   testEmail,
   getArticles,
