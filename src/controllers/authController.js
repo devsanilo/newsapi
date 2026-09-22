@@ -6,6 +6,7 @@ const axios = require("axios");
 const jwt = require("jsonwebtoken");
 const jwksClient = require("jwks-rsa");
 const User = require("../models/User");
+const AccountDeletionRequest = require("../models/AccountDeletionRequest");
 const { generateToken } = require("../middleware/auth");
 const logger = require("../utils/logger");
 
@@ -389,6 +390,88 @@ async function changePassword(req, res, next) {
   }
 }
 
+// ─── Account deletion ─────────────────────────────────────────
+
+/**
+ * File a deletion request and deactivate the account in one transaction.
+ *
+ * Deactivating here rather than on review is what makes deletion take effect
+ * immediately: `requireAuth` refuses an inactive user, so existing tokens stop
+ * working once they fall out of its 60s cache. Purging the row and the user's
+ * data stays a deliberate admin step, which is why the request is kept.
+ */
+async function requestAccountDeletion(req, res, next) {
+  try {
+    const { confirmation, reason } = req.body;
+
+    // Checked here, not only in the form: the form is a convenience, the server
+    // is the control. A stray tap or a borrowed session must not be able to
+    // delete an account.
+    if (confirmation !== "DELETE") {
+      return res
+        .status(400)
+        .json({ success: false, error: "Type DELETE to confirm deletion." });
+    }
+
+    const user = await User.findByPk(req.user.id);
+    if (!user) {
+      return res
+        .status(404)
+        .json({ success: false, error: "User not found." });
+    }
+
+    const pending = await AccountDeletionRequest.findOne({
+      where: { user_id: user.id, status: "pending" },
+    });
+    if (pending) {
+      return res.status(409).json({
+        success: false,
+        error: "A deletion request for this account is already pending.",
+      });
+    }
+
+    const requestedAt = new Date();
+    const request = await AccountDeletionRequest.sequelize.transaction(
+      async (transaction) => {
+        const created = await AccountDeletionRequest.create(
+          {
+            user_id: user.id,
+            email: user.email,
+            reason:
+              typeof reason === "string" && reason.trim()
+                ? reason.trim().slice(0, 500)
+                : null,
+            status: "pending",
+            requested_at: requestedAt,
+          },
+          { transaction },
+        );
+
+        user.is_active = false;
+        user.updated_at = requestedAt;
+        await user.save({ transaction });
+
+        return created;
+      },
+    );
+
+    logger.info(
+      `Account deletion requested: ${user.email} (${user.id}) [${request.id}]`,
+    );
+
+    res.status(201).json({
+      success: true,
+      data: {
+        requestId: request.id,
+        requestedAt: request.requested_at,
+        message: "Account deactivated and queued for deletion.",
+      },
+    });
+  } catch (error) {
+    next(error);
+  }
+}
+
 module.exports = {
   register,
   login,
@@ -397,4 +480,5 @@ module.exports = {
   getProfile,
   updateProfile,
   changePassword,
+  requestAccountDeletion,
 };

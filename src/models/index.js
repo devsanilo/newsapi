@@ -20,6 +20,7 @@ const ReadingStreak = require("./ReadingStreak");
 const Page = require("./Page");
 const Reward = require("./Reward");
 const AdSetting = require("./AdSetting");
+const AccountDeletionRequest = require("./AccountDeletionRequest");
 const Setting = require("./Setting");
 const PageView = require("./PageView");
 const LeagueStanding = require("./LeagueStanding");
@@ -219,6 +220,7 @@ module.exports = {
   Page,
   Reward,
   AdSetting,
+  AccountDeletionRequest,
   LeagueStanding,
   Match,
   TopScorer,

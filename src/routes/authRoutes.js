@@ -19,4 +19,10 @@ router.get("/me", requireAuth, auth.getProfile);
 router.put("/me", requireAuth, auth.updateProfile);
 router.put("/password", requireAuth, auth.changePassword);
 
+// Account deletion (self-service). Deliberately NOT behind authLimiter: it is
+// already behind requireAuth, and a shared-IP limit could otherwise stop
+// someone exercising a legal right to erasure. The global apiLimiter still
+// applies to every /api route.
+router.post("/delete-request", requireAuth, auth.requestAccountDeletion);
+
 module.exports = router;
