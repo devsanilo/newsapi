@@ -196,11 +196,14 @@ async function record(queryInterface, name) {
 /**
  * Run migrations on boot unless disabled.
  *
- * Failure is logged loudly but is NOT fatal by default: a migration for an
- * unrelated feature should not take the whole API down, and this way a deploy
- * that fails to migrate still serves whatever the current schema supports. Set
- * `MIGRATE_STRICT=true` to make failure abort start-up instead — worth doing
- * when the deploy and the schema change must land together.
+ * Failure aborts start-up by DEFAULT, which is the opposite of the first
+ * version of this file. That default caused a production outage: the migration
+ * did not finish, the app started anyway, and because the model declared
+ * columns the database did not have, every ORM query on `news` began failing
+ * with "Unknown column". A deploy that refuses to start is loud and
+ * rollback-able; a deploy that starts with a broken schema is silent and takes
+ * the site down. A migration that only affects an unrelated feature can be
+ * allowed through with `MIGRATE_STRICT=false`.
  */
 async function migrateOnBoot() {
   if (String(process.env.MIGRATE_ON_BOOT || "true").toLowerCase() === "false") {
@@ -211,16 +214,17 @@ async function migrateOnBoot() {
   const summary = await runMigrations();
 
   if (summary.error) {
+    // Only skip the abort when explicitly told the failure is tolerable.
     const strict =
-      String(process.env.MIGRATE_STRICT || "false").toLowerCase() === "true";
+      String(process.env.MIGRATE_STRICT || "true").toLowerCase() !== "false";
     const message =
       `Migrations did not complete: ${summary.error}. ` +
-      `Check that the model and the database schema agree before trusting requests on this table.`;
+      `A model that declares a column the database lacks breaks every query on that table.`;
     if (strict) {
-      logger.error(`${message} MIGRATE_STRICT=true — aborting start-up.`);
+      logger.error(`${message} Aborting start-up (set MIGRATE_STRICT=false to override).`);
       process.exit(1);
     }
-    logger.error(`${message} Continuing anyway (set MIGRATE_STRICT=true to abort).`);
+    logger.error(`${message} Continuing because MIGRATE_STRICT=false.`);
   } else if (summary.applied.length > 0 || summary.adopted.length > 0) {
     logger.info(
       `Migrations: applied ${summary.applied.length}, adopted ${summary.adopted.length}, already present ${summary.skipped.length}.`,

@@ -66,12 +66,20 @@ module.exports = {
         );
       }
 
+      // MySQL reports information_schema column names in UPPERCASE regardless
+      // of how the query spells them, so reading `r.index_name` yields
+      // undefined and this guard silently never fires — it then re-adds an
+      // index that already exists and dies with ER_DUP_KEYNAME. That is not
+      // hypothetical: it broke a production deploy, because this migration runs
+      // before the AI migration and the runner stops at the first failure, so
+      // the later migration never ran at all. Alias explicitly so the JS key is
+      // deterministic.
       const [idxRows] = await queryInterface.sequelize.query(
-        `SELECT index_name FROM information_schema.statistics
+        `SELECT INDEX_NAME AS name FROM information_schema.statistics
          WHERE table_schema = DATABASE() AND table_name = 'news'`,
         { transaction: t },
       );
-      const idx = new Set(idxRows.map((r) => r.index_name));
+      const idx = new Set(idxRows.map((r) => r.name));
 
       if (!idx.has('idx_is_original')) {
         await queryInterface.addIndex('news', ['is_original'], {
