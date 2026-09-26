@@ -1098,6 +1098,209 @@ async function getArticles(req, res) {
   }
 }
 
+/**
+ * Granularity presets for the article-volume series.
+ *
+ * The SQL fragment is picked from this fixed map, so the `granularity` query
+ * param can never reach the SQL — an unrecognised value falls back to "day"
+ * instead of being interpolated.
+ *
+ * `bucket` always evaluates to a 'YYYY-MM-DD' *string* — using DATE() instead
+ * would make mysql2 hand back a JS Date object, and the zero-fill loop below
+ * keys off the string. It also lets that loop regenerate every key in JS
+ * without reproducing MySQL's week/month formatting.
+ */
+const ARTICLE_STATS_GRAINS = {
+  day: {
+    bucket: "DATE_FORMAT(created_at, '%Y-%m-%d')",
+    points: 30,
+    unit: "day",
+    title: "Articles created per day · last 30 days",
+    label: (d) => d.toLocaleDateString("en-US", { weekday: "short" }),
+    axis: (d) => d.toLocaleDateString("en-US", { day: "numeric", month: "short" }),
+  },
+  week: {
+    // WEEKDAY() is 0 on Monday, so this lands on the week's Monday.
+    bucket: "DATE_FORMAT(DATE_SUB(DATE(created_at), INTERVAL WEEKDAY(created_at) DAY), '%Y-%m-%d')",
+    points: 12,
+    unit: "week",
+    title: "Articles created per week · last 12 weeks",
+    label: (d) => d.toLocaleDateString("en-US", { day: "numeric", month: "short" }),
+    axis: (d) => d.toLocaleDateString("en-US", { day: "numeric", month: "short" }),
+  },
+  month: {
+    bucket: "DATE_FORMAT(created_at, '%Y-%m-01')",
+    points: 12,
+    unit: "month",
+    title: "Articles created per month · last 12 months",
+    label: (d) => d.toLocaleDateString("en-US", { month: "short" }),
+    axis: (d) => d.toLocaleDateString("en-US", { month: "short", year: "2-digit" }),
+  },
+  year: {
+    bucket: "DATE_FORMAT(created_at, '%Y-01-01')",
+    points: 5,
+    unit: "year",
+    title: "Articles created per year · last 5 years",
+    label: (d) => String(d.getFullYear()),
+    axis: (d) => String(d.getFullYear()),
+  },
+};
+
+/**
+ * Period boundaries, evaluated by MySQL so they share the DB session
+ * timezone (and week-start) with the rows being counted.
+ */
+const ARTICLE_STATS_PERIODS = [
+  ["today", "created_at >= CURDATE()"],
+  ["week", "created_at >= DATE_SUB(CURDATE(), INTERVAL WEEKDAY(CURDATE()) DAY)"],
+  ["month", "created_at >= DATE_FORMAT(CURDATE(), '%Y-%m-01')"],
+  ["year", "created_at >= DATE_FORMAT(CURDATE(), '%Y-01-01')"],
+  ["allTime", "1=1"],
+];
+
+/**
+ * 'YYYY-MM-DD' in local time. `toISOString()` would shift the day for anyone
+ * east of UTC once it is past midnight locally.
+ */
+function localIsoDate(d) {
+  return [
+    d.getFullYear(),
+    String(d.getMonth() + 1).padStart(2, "0"),
+    String(d.getDate()).padStart(2, "0"),
+  ].join("-");
+}
+
+/**
+ * First bucket boundary for a granularity, aligned to the calendar so buckets
+ * line up (weeks start Monday, months on the 1st, years in January).
+ */
+function seriesStart(unit, points) {
+  const d = new Date();
+  d.setHours(0, 0, 0, 0);
+  if (unit === "week") {
+    d.setDate(d.getDate() - ((d.getDay() + 6) % 7)); // back to Monday
+    d.setDate(d.getDate() - (points - 1) * 7);
+  } else if (unit === "month") {
+    d.setDate(1);
+    d.setMonth(d.getMonth() - (points - 1));
+  } else if (unit === "year") {
+    d.setMonth(0, 1);
+    d.setFullYear(d.getFullYear() - (points - 1));
+  } else {
+    d.setDate(d.getDate() - (points - 1));
+  }
+  return d;
+}
+
+/**
+ * GET /api/admin/articles/stats — article volume by period and by bucket.
+ *
+ * Counts come from `news.created_at` (when the row was created) rather than
+ * `published_at`, which is null for drafts and for crawled rows whose feed
+ * carried no date.
+ */
+async function getArticleStats(req, res) {
+  try {
+    const requested = String(req.query.granularity || "day").toLowerCase();
+    // hasOwn, not a truthy lookup: `ARTICLE_STATS_GRAINS["__proto__"]` (and
+    // "constructor", "toString"…) resolves to something truthy on a plain
+    // object literal, which would hand us a grain with no `bucket` and break
+    // the query.
+    const grainName = Object.hasOwn(ARTICLE_STATS_GRAINS, requested)
+      ? requested
+      : "day";
+    const grain = ARTICLE_STATS_GRAINS[grainName];
+    const num = (v) => Number(v || 0);
+
+    // One pass with a SUM(CASE…) per period instead of five COUNT queries.
+    // `SUM(1=1)` counts every row, so "allTime" needs no special case.
+    const sums = [];
+    for (const [key, clause] of ARTICLE_STATS_PERIODS) {
+      sums.push(`SUM(${clause}) AS total_${key}`);
+      sums.push(`SUM(${clause} AND is_published = 1) AS published_${key}`);
+      sums.push(`SUM(${clause} AND is_original = 1) AS original_${key}`);
+    }
+    const [[row]] = await sequelize.query(
+      `SELECT ${sums.join(", ")} FROM news`,
+    );
+
+    const periods = {};
+    for (const [key] of ARTICLE_STATS_PERIODS) {
+      const total = num(row[`total_${key}`]);
+      const published = num(row[`published_${key}`]);
+      const original = num(row[`original_${key}`]);
+      periods[key] = {
+        total,
+        published,
+        drafts: Math.max(0, total - published),
+        original,
+        aggregated: Math.max(0, total - original),
+      };
+    }
+
+    const start = seriesStart(grain.unit, grain.points);
+    const [bucketRows] = await sequelize.query(
+      `SELECT ${grain.bucket} AS bucket,
+              COUNT(*) AS total,
+              SUM(is_published = 1) AS published,
+              SUM(is_original = 1) AS original
+         FROM news
+        WHERE created_at >= :start
+        GROUP BY bucket
+        ORDER BY bucket`,
+      { replacements: { start: localIsoDate(start) } },
+    );
+
+    const byBucket = new Map(
+      bucketRows.map((r) => [
+        String(r.bucket).slice(0, 10),
+        {
+          total: num(r.total),
+          published: num(r.published),
+          original: num(r.original),
+        },
+      ]),
+    );
+
+    // Zero-fill so the chart keeps a constant bar count and gaps in activity
+    // read as gaps rather than as adjacent busy days.
+    const points = [];
+    for (let i = 0; i < grain.points; i += 1) {
+      const d = new Date(start);
+      if (grain.unit === "week") d.setDate(start.getDate() + i * 7);
+      else if (grain.unit === "month") d.setMonth(start.getMonth() + i);
+      else if (grain.unit === "year") d.setFullYear(start.getFullYear() + i);
+      else d.setDate(start.getDate() + i);
+
+      const key = localIsoDate(d);
+      const hit = byBucket.get(key) || { total: 0, published: 0, original: 0 };
+      points.push({
+        date: key,
+        label: grain.label(d),
+        axis: grain.axis(d),
+        count: hit.total,
+        published: hit.published,
+        original: hit.original,
+      });
+    }
+
+    res.json({
+      success: true,
+      data: {
+        periods,
+        series: {
+          granularity: grainName,
+          title: grain.title,
+          points,
+        },
+      },
+    });
+  } catch (err) {
+    logger.error("admin.getArticleStats error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1107,6 +1310,7 @@ module.exports = {
   getAnalytics,
   testEmail,
   getArticles,
+  getArticleStats,
   getArticle,
   createArticle,
   updateArticle,

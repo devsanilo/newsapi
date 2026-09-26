@@ -34,6 +34,9 @@ router.post(
 );
 
 router.get("/articles", adminController.getArticles);
+// Article-volume stats. Registered before "/articles/:id" so the literal path
+// is not swallowed by a parameter match.
+router.get("/articles/stats", adminController.getArticleStats);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);
 // Lead-image repair. Registered before the ":id" routes so the literal path is
