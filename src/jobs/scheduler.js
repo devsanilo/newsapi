@@ -6,6 +6,7 @@ const cron = require("node-cron");
 const { addCrawlJob, cleanQueues } = require("./queue");
 const CrawlerSchedule = require("../models/CrawlerSchedule");
 const { purgeDueRequests } = require("../services/accountDeletionService");
+const rewriteService = require("../services/rewriteService");
 const logger = require("../utils/logger");
 
 const ENV_CRON_SCHEDULE = normalizeSchedule(process.env.CRON_SCHEDULE);
@@ -14,11 +15,13 @@ const DEFAULT_CRON_SCHEDULE = ENV_CRON_SCHEDULE || "*/5 * * * *";
 let scheduledTask = null;
 let cleanupTask = null;
 let deletionPurgeTask = null;
+let rewriteTask = null;
 
 const runtimeState = {
   cron_schedule: DEFAULT_CRON_SCHEDULE,
   is_enabled: true,
   is_running: false,
+  is_rewriting: false,
   last_started_at: null,
   last_finished_at: null,
   last_result: null,
@@ -184,6 +187,110 @@ function startMainSchedule(schedule) {
 }
 
 /**
+ * Process one batch of aggregated rows through the AI rewrite pipeline.
+ *
+ * Sequential by design: each article is a paid API call plus a source fetch, so
+ * a wide fan-out would burn quota on rate limits before producing anything.
+ * Rows are claimed atomically (FOR UPDATE SKIP LOCKED), so it is safe for more
+ * than one process to run this.
+ */
+async function runRewriteBatch({ limit } = {}) {
+  const batchSize =
+    Number(limit) || Number(process.env.REWRITE_BATCH_SIZE || 3);
+
+  const claimed = await rewriteService.claimBatch({
+    limit: batchSize,
+    order: process.env.REWRITE_ORDER || "recent",
+  });
+
+  if (claimed.length === 0) {
+    return { claimed: 0, ok: 0, failed: 0, cost_usd: 0 };
+  }
+
+  let ok = 0;
+  let failed = 0;
+  let cost = 0;
+  let environmentError = false;
+
+  for (const row of claimed) {
+    const result = await rewriteService.rewriteRow(row);
+    if (result.ok) {
+      ok += 1;
+      cost += Number(result.meta?.cost_usd || 0);
+    } else {
+      failed += 1;
+      // Once the environment is broken (no key, no scraper) every remaining
+      // row would fail the same way, so stop rather than churn the queue.
+      if (result.reason === "environment_error") {
+        environmentError = true;
+        logger.error(
+          "Cron: AI rewrite aborted early — environment error. Fix the API key or scraper.",
+        );
+        break;
+      }
+    }
+  }
+
+  return {
+    claimed: claimed.length,
+    ok,
+    failed,
+    cost_usd: Number(cost.toFixed(6)),
+    environmentError,
+  };
+}
+
+/**
+ * AI rewrite batch.
+ *
+ * OFF BY DEFAULT (`REWRITE_ENABLED=true` to arm). It spends money on a
+ * third-party API and writes to the production `news` table, so it must never
+ * start doing that merely because a new deploy booted. Output is staged only —
+ * nothing becomes reader-visible without an explicit approval.
+ */
+function ensureRewriteSchedule() {
+  const enabled =
+    String(process.env.REWRITE_ENABLED || "false").toLowerCase() === "true";
+
+  if (!enabled) {
+    logger.info(
+      "AI rewrite schedule disabled (set REWRITE_ENABLED=true to enable).",
+    );
+    return;
+  }
+
+  if (rewriteTask) return;
+
+  const schedule = process.env.REWRITE_CRON || "*/10 * * * *";
+  if (!cron.validate(schedule)) {
+    logger.error(`Invalid REWRITE_CRON "${schedule}" — rewrite schedule not started.`);
+    return;
+  }
+
+  rewriteTask = cron.schedule(schedule, async () => {
+    if (runtimeState.is_rewriting) {
+      logger.warn("Cron: Previous AI rewrite batch still running, skipping tick");
+      return;
+    }
+    runtimeState.is_rewriting = true;
+    try {
+      const result = await runRewriteBatch();
+      if (result.claimed > 0) {
+        logger.info(
+          `Cron: AI rewrite batch — claimed ${result.claimed}, staged ${result.ok}, failed ${result.failed}, cost $${result.cost_usd}`,
+        );
+      }
+    } catch (error) {
+      logger.error(`Cron: AI rewrite batch failed: ${error.message}`);
+    } finally {
+      runtimeState.is_rewriting = false;
+    }
+  });
+
+  logger.info(`AI rewrite scheduled with "${schedule}" (staging only)`);
+}
+
+/**
  * Start scheduler based on persisted config
  */
 async function startScheduler() {
@@ -195,6 +302,7 @@ async function startScheduler() {
 
   ensureCleanupSchedule();
   ensureDeletionPurgeSchedule();
+  ensureRewriteSchedule();
 
   if (runtimeState.is_enabled) {
     startMainSchedule(runtimeState.cron_schedule);
@@ -220,6 +328,11 @@ function stopScheduler() {
     deletionPurgeTask.stop();
     deletionPurgeTask = null;
     logger.info("Erasure purge scheduler stopped");
+  }
+  if (rewriteTask) {
+    rewriteTask.stop();
+    rewriteTask = null;
+    logger.info("AI rewrite scheduler stopped");
   }
 }
 
@@ -249,6 +362,9 @@ async function getSchedulerState() {
     has_main_task: Boolean(scheduledTask),
     has_cleanup_task: Boolean(cleanupTask),
     has_deletion_purge_task: Boolean(deletionPurgeTask),
+    rewrite_enabled:
+      String(process.env.REWRITE_ENABLED || "false").toLowerCase() === "true",
+    has_rewrite_task: Boolean(rewriteTask),
   };
 }
 
@@ -272,6 +388,7 @@ async function updateSchedulerConfig({
 
   ensureCleanupSchedule();
   ensureDeletionPurgeSchedule();
+  ensureRewriteSchedule();
   if (runtimeState.is_enabled) {
     startMainSchedule(runtimeState.cron_schedule);
   } else {
@@ -287,4 +404,5 @@ module.exports = {
   triggerImmediateCrawl,
   getSchedulerState,
   updateSchedulerConfig,
+  runRewriteBatch,
 };
