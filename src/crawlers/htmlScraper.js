@@ -240,11 +240,7 @@ class HTMLScraper {
         const text = $(el).text().trim();
         if (text) contentParts.push(text);
       });
-      // 2000 chars is the right cap for a stored aggregated summary, but it is
-      // far too thin to rewrite from — this is overridable so the AI pipeline
-      // can pull real source text without changing ingest behaviour.
-      const contentLimit = Number(config.contentLimit) || 2000;
-      const content = cleanContent(contentParts.join(" "), contentLimit);
+      const content = cleanContent(contentParts.join(" "), 2000);
 
       // Extract image
       let imageUrl = null;

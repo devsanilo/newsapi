@@ -15,7 +15,6 @@ const routes = require("./routes");
 const { notFoundHandler, errorHandler } = require("./middleware/errorHandler");
 const { apiLimiter } = require("./middleware/rateLimiter");
 const { testConnection, syncDatabase } = require("./database/connection");
-const { migrateOnBoot } = require("./database/migrate");
 const { startScheduler, stopScheduler } = require("./jobs/scheduler");
 const { closeQueues } = require("./jobs/queue");
 const logger = require("./utils/logger");
@@ -136,9 +135,6 @@ async function startServer() {
       `🚀 Starting Noozia API (NODE_ENV=${process.env.NODE_ENV || "development"}, PORT=${PORT})`,
     );
     await testConnection();
-    // Must precede syncDatabase(): sync() (re)creates the model's indexes, and
-    // an index over a column that does not exist yet fails with MySQL 1072.
-    await migrateOnBoot();
     await syncDatabase({ alter: false });
 
     const server = app.listen(PORT, () => {
