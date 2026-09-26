@@ -65,7 +65,7 @@ function init() {
     .catch((err) => logger.warn(`SMTP verification failed: ${err.message}`));
 }
 
-async function send({ to, subject, html, text }) {
+async function send({ to, subject, html, text, replyTo }) {
   const transporter = await getTransporter();
   if (!transporter) {
     logger.warn("Email skipped — SMTP not configured.");
@@ -76,7 +76,17 @@ async function send({ to, subject, html, text }) {
   const from = cfg.from || cfg.user || "noreply@trenxi.com";
 
   try {
-    const info = await transporter.sendMail({ from, to, subject, html, text });
+    const info = await transporter.sendMail({
+      from,
+      to,
+      subject,
+      html,
+      text,
+      // Only set when the caller wants replies routed somewhere other than the
+      // mailbox we send from — the contact form uses this so replying goes
+      // straight back to the visitor.
+      ...(replyTo ? { replyTo } : {}),
+    });
     logger.info(`Email sent to ${to}: ${info.messageId}`);
     return info;
   } catch (error) {

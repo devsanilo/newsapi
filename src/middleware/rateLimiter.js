@@ -58,9 +58,24 @@ const authLimiter = rateLimit({
   },
 });
 
+// Contact form limiter — this endpoint sends real email, so it is an abuse
+// target. Tight on purpose: a genuine visitor sends one message.
+const contactLimiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 3, // Max 3 contact messages per 15 minutes per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: {
+    success: false,
+    error: "Too Many Requests",
+    message: "Too many messages sent. Please try again later.",
+  },
+});
+
 module.exports = {
   apiLimiter,
   crawlerLimiter,
   searchLimiter,
   authLimiter,
+  contactLimiter,
 };
