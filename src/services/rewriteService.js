@@ -32,6 +32,12 @@ const MAX_ATTEMPTS = Number(process.env.REWRITE_MAX_ATTEMPTS || 3);
 // Longest run of consecutive words allowed to appear in both source and output.
 // Above this, the model is transcribing rather than rewriting.
 const MAX_SHARED_RUN = Number(process.env.REWRITE_MAX_SHARED_RUN || 12);
+
+// Absolute ceiling even for quoted material. The prompt permits reproducing a
+// direct quotation verbatim, which is ordinary journalism — but a single quote
+// running to 80+ words means the model is quoting the article rather than
+// writing one.
+const MAX_TOTAL_SHARED_RUN = Number(process.env.REWRITE_MAX_QUOTE_RUN || 80);
 const SOURCE_CHAR_LIMIT = Number(process.env.REWRITE_SOURCE_CHARS || 8000);
 
 const SYSTEM_PROMPT = `You are a careful news desk editor for Trenxi, a Nigerian news publication.
@@ -101,15 +107,56 @@ function longestSharedRun(a, b) {
   return best;
 }
 
+/**
+ * Remove quoted spans, so an overlap check measures the model's own prose.
+ *
+ * The prompt permits reproducing a direct quotation verbatim, and news copy is
+ * full of them. Measured on a real article, the whole 31-word overlap with the
+ * source was a single vernacular quotation; the surrounding prose overlapped by
+ * only 11 words. Checking the raw text therefore rejected good output for doing
+ * exactly what it was told to do.
+ *
+ * Double quotes only — treating apostrophes as delimiters would shred ordinary
+ * words like "don't".
+ */
+function stripQuoted(text) {
+  return String(text || "")
+    .replace(/["\u201C][^"\u201D]*["\u201D]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 const wordCount = (s) => String(s || "").trim().split(/\s+/).filter(Boolean).length;
 
+/**
+ * Phrases a model uses when it DECLINES the task.
+ *
+ * Deliberately narrow, and only ever matched near the start of a response.
+ * The first version of this looked for a bare "I can't" anywhere in the body
+ * and rejected a perfectly good 279-word article because the interviewee was
+ * quoted saying "Because I can't even see her back now" — a quotation, not a
+ * refusal. News copy is full of first-person quotations, so a bare phrase match
+ * cannot distinguish the two.
+ *
+ * A genuine refusal essentially IS the response, so it appears immediately;
+ * a phrase at character 993 of clean copy does not. Hence: require a task verb
+ * and only inspect the opening.
+ */
 const REFUSAL_PATTERNS = [
-  /\bas an ai\b/i,
-  /\bi cannot\b/i,
-  /\bi can't\b/i,
-  /\bi'm sorry\b/i,
-  /\bi am unable\b/i,
+  /\bas an ai (language )?model\b/i,
+  /\bi (cannot|can't|can not|am unable to|must decline to) (assist|help|write|generate|create|produce|provide|rewrite|comply)\b/i,
+  /\bi'?m sorry,? but i (cannot|can't|am unable)\b/i,
+  /\bi (must|have to) (respectfully )?decline\b/i,
+  /\bi (cannot|can't) (fulfil|fulfill|complete) (this|that|the) (request|task)\b/i,
 ];
+
+/** Only the opening is inspected, because a refusal is the whole response. */
+const REFUSAL_SCAN_CHARS = 300;
+
+function looksLikeRefusal(text) {
+  const head = String(text || "").slice(0, REFUSAL_SCAN_CHARS);
+  return REFUSAL_PATTERNS.some((pattern) => pattern.test(head));
+}
 
 /**
  * Validate a model response before staging it.
@@ -128,10 +175,12 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
   if (!content) return { ok: false, reason: "Missing content" };
   if (title.length > 500) return { ok: false, reason: "Title exceeds column limit" };
 
-  for (const pattern of REFUSAL_PATTERNS) {
-    if (pattern.test(content) || pattern.test(description)) {
-      return { ok: false, reason: "Response contains refusal boilerplate" };
-    }
+  if (
+    looksLikeRefusal(title) ||
+    looksLikeRefusal(description) ||
+    looksLikeRefusal(content)
+  ) {
+    return { ok: false, reason: "Response looks like a refusal" };
   }
 
   const words = wordCount(content);
@@ -157,11 +206,22 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
     return { ok: false, reason: "Headline is unchanged from the original" };
   }
 
-  const shared = longestSharedRun(content, sourceText);
-  if (shared >= MAX_SHARED_RUN) {
+  // Two measurements, because they answer different questions.
+  //   prose  — is the model's own writing original? (the thing that matters)
+  //   total  — is it quoting the whole article verbatim?
+  const proseShared = longestSharedRun(stripQuoted(content), stripQuoted(sourceText));
+  if (proseShared >= MAX_SHARED_RUN) {
     return {
       ok: false,
-      reason: `Still verbatim: ${shared}-word run shared with the source`,
+      reason: `Still verbatim: ${proseShared}-word run shared with the source`,
+    };
+  }
+
+  const totalShared = longestSharedRun(content, sourceText);
+  if (totalShared >= MAX_TOTAL_SHARED_RUN) {
+    return {
+      ok: false,
+      reason: `Quotes the source at length: ${totalShared}-word verbatim run`,
     };
   }
 
@@ -180,7 +240,8 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
       content,
       tags,
       words,
-      sharedRun: shared,
+      proseShared,
+      totalShared,
     },
   };
 }
@@ -330,7 +391,8 @@ Write the new Trenxi article now, as a JSON object.`,
       ms: response.ms,
       finish_reason: response.finishReason || null,
       words: verdict.value.words,
-      shared_run: verdict.value.sharedRun,
+      shared_run: verdict.value.proseShared,
+      total_shared_run: verdict.value.totalShared,
       source_chars: source.text.length,
       generated_at: new Date().toISOString(),
     };
@@ -493,6 +555,7 @@ module.exports = {
   fetchSourceText,
   validateRewrite,
   longestSharedRun,
+  stripQuoted,
   applyStaged,
   discardStaged,
   markFailed,
@@ -505,4 +568,5 @@ module.exports = {
   MAX_WORDS,
   MAX_ATTEMPTS,
   MAX_SHARED_RUN,
+  MAX_TOTAL_SHARED_RUN,
 };
