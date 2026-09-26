@@ -156,8 +156,15 @@ function listMigrations() {
 }
 
 /**
- * Create the bookkeeping table on the same schema `sequelize-cli` uses, so a
- * later manual `db:migrate` agrees with what ran here.
+ * Create the bookkeeping table on exactly the schema `sequelize-cli` uses.
+ *
+ * Deliberately `name` and nothing else. An earlier version added an
+ * `applied_at` column, which broke silently: when the table already existed
+ * (created by the CLI, or by an earlier boot) `ensureMetaTable` returned early,
+ * so `applied_at` was absent and every `INSERT` failed with "Unknown column".
+ * The migration then ran successfully but was never recorded, so it re-ran on
+ * every boot. Matching the CLI's schema means neither tool can surprise the
+ * other.
  */
 async function ensureMetaTable(queryInterface) {
   const tables = (await queryInterface.showAllTables()).map((t) =>
@@ -171,25 +178,29 @@ async function ensureMetaTable(queryInterface) {
       primaryKey: true,
       allowNull: false,
     },
-    // Extra over the CLI's schema; the CLI only ever reads/writes `name`, so
-    // this stays compatible while giving ops a timestamp to look at.
-    applied_at: {
-      type: Sequelize.DataTypes.DATE,
-      allowNull: true,
-    },
   });
   logger.info(`Migrations: created \`${META_TABLE}\``);
 }
 
-/** Idempotent record — safe if two replicas boot at the same moment. */
+/**
+ * Idempotent record — safe if two replicas boot at the same moment.
+ *
+ * `INSERT IGNORE` matters here: a container restart can race a second process
+ * that already applied the same migration.
+ */
 async function record(queryInterface, name) {
   try {
     await sequelize.query(
-      `INSERT IGNORE INTO \`${META_TABLE}\` (name, applied_at) VALUES (:name, NOW())`,
+      `INSERT IGNORE INTO \`${META_TABLE}\` (name) VALUES (:name)`,
       { replacements: { name } },
     );
   } catch (err) {
-    logger.warn(`Migrations: could not record "${name}": ${err.message}`);
+    // Not fatal, but it must be visible: an unrecorded migration re-runs every
+    // boot, and silence here is what hid a broken migration during a
+    // production outage.
+    logger.error(
+      `Migrations: could not record "${name}" (${err.message}) — it will run again on next boot.`,
+    );
   }
 }
 
