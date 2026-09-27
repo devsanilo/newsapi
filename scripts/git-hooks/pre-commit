@@ -1,0 +1,51 @@
+#!/bin/sh
+#
+# Reject a commit that would put a real credential into the repository.
+#
+# This exists because the same mistake happened twice: a live DeepSeek API key
+# was pasted into `.env.example` (a TRACKED template file) and swept up by a
+# `git add`. Both times it was caught before pushing, but relying on noticing is
+# not a control. `.env.example` is a template — it is meant to hold empty values
+# and comments, never secrets.
+#
+# Install with:  sh scripts/git-hooks/install.sh
+#
+# Exit non-zero to abort the commit.
+
+staged=$(git diff --cached --name-only --diff-filter=ACM)
+
+fail=0
+
+# 1. Secrets with a non-empty value in the tracked env template.
+for f in $staged; do
+  case "$f" in
+    *.env.example|*env.example|*.env.sample)
+      bad=$(git show ":$f" 2>/dev/null | grep -nE '^[A-Z0-9_]*(KEY|SECRET|TOKEN|PASSWORD|PASS|CREDENTIAL)[A-Z0-9_]*=.+' \
+        | grep -vE '=.+(your_|changeme|placeholder|xxx|<|example|_here)' || true)
+      if [ -n "$bad" ]; then
+        echo "pre-commit: refusing to commit a credential in $f"
+        echo "$bad" | sed 's/=.*/=<redacted>/' | sed 's/^/    line /'
+        echo "    Put the real value in .env (gitignored), not in the template."
+        fail=1
+      fi
+      ;;
+  esac
+done
+
+# 2. Anything that looks like a live provider key, in any staged file.
+for f in $staged; do
+  hits=$(git show ":$f" 2>/dev/null | grep -nE '(sk-[A-Za-z0-9]{20,}|AIza[0-9A-Za-z_-]{30,}|ghp_[A-Za-z0-9]{30,}|-----BEGIN [A-Z ]*PRIVATE KEY-----)' || true)
+  if [ -n "$hits" ]; then
+    echo "pre-commit: refusing to commit what looks like a live API key in $f"
+    echo "$hits" | cut -c1-60 | sed 's/^/    /'
+    fail=1
+  fi
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo ""
+  echo "Commit aborted. To bypass deliberately: git commit --no-verify"
+  exit 1
+fi
+
+exit 0
