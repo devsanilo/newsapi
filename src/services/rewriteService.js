@@ -29,6 +29,13 @@ const PROMPT_VERSION = "rewrite-v1";
 const MIN_WORDS = Number(process.env.REWRITE_MIN_WORDS || 250);
 const MAX_WORDS = Number(process.env.REWRITE_MAX_WORDS || 1200);
 const MAX_ATTEMPTS = Number(process.env.REWRITE_MAX_ATTEMPTS || 3);
+
+// A row claimed but never finished — because the process restarted or the batch
+// crashed — would sit in 'processing' forever, since claiming only ever picks up
+// 'none' or 'failed'. Anything claimed longer ago than this is returned to the
+// queue. Generous by default so a legitimately slow article is not stolen from
+// a run that is still working on it.
+const CLAIM_TIMEOUT_MINUTES = Number(process.env.REWRITE_CLAIM_TIMEOUT_MINUTES || 15);
 // Longest run of consecutive words allowed to appear in both source and output.
 // Above this, the model is transcribing rather than rewriting.
 const MAX_SHARED_RUN = Number(process.env.REWRITE_MAX_SHARED_RUN || 12);
@@ -260,7 +267,32 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
   // Whitelisted ordering — never interpolate the caller's string.
   const orderBy = order === "oldest" ? "created_at ASC" : "created_at DESC";
 
+  // Publishers that cannot be scraped (paywalls, bot walls) waste an attempt on
+  // every row and crowd out sources that work. Skipping them is cheaper than
+  // retrying each one three times.
+  const skipSources = String(process.env.REWRITE_SKIP_SOURCES || "")
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  const skipClause = skipSources.length ? "AND source NOT IN (:skipSources)" : "";
+
   return sequelize.transaction(async (t) => {
+    // Recover anything a previous interrupted run left behind, so a restart
+    // cannot permanently strand a row.
+    const [, recovered] = await sequelize.query(
+      `UPDATE news
+          SET rewrite_status = 'failed',
+              rewrite_error = 'Claim expired (previous run did not finish)'
+        WHERE rewrite_status = 'processing'
+          AND updated_at < DATE_SUB(NOW(), INTERVAL :timeout MINUTE)`,
+      { replacements: { timeout: CLAIM_TIMEOUT_MINUTES }, transaction: t },
+    );
+    if (recovered && recovered.affectedRows > 0) {
+      logger.warn(
+        `rewriteService.claimBatch: recovered ${recovered.affectedRows} stranded row(s).`,
+      );
+    }
+
     const [rows] = await sequelize.query(
       `SELECT id, url, source, title, description
          FROM news
@@ -269,10 +301,18 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
           AND rewrite_attempts < :maxAttempts
           AND url IS NOT NULL
           AND url <> ''
+          ${skipClause}
         ORDER BY ${orderBy}
         LIMIT :limit
         FOR UPDATE SKIP LOCKED`,
-      { replacements: { limit: safeLimit, maxAttempts: MAX_ATTEMPTS }, transaction: t },
+      {
+        replacements: {
+          limit: safeLimit,
+          maxAttempts: MAX_ATTEMPTS,
+          ...(skipSources.length ? { skipSources } : {}),
+        },
+        transaction: t,
+      },
     );
 
     if (rows.length === 0) return [];
@@ -569,4 +609,5 @@ module.exports = {
   MAX_ATTEMPTS,
   MAX_SHARED_RUN,
   MAX_TOTAL_SHARED_RUN,
+  CLAIM_TIMEOUT_MINUTES,
 };

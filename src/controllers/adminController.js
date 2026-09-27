@@ -14,6 +14,13 @@ const { v4: uuidv4 } = require("uuid");
 const { generateHash } = require("../utils/hash");
 const { toCanonicalCategory } = require("../utils/categories");
 const imageService = require("../services/articleImageService");
+const rewriteService = require("../services/rewriteService");
+const {
+  getRewriteSettings,
+  updateRewriteSettings,
+} = require("../services/rewriteSettings");
+const scheduler = require("../jobs/scheduler");
+const aiService = require("../services/aiService");
 const {
   ERASURE_WINDOW_DAYS,
   daysRemaining,
@@ -1301,6 +1308,253 @@ async function getArticleStats(req, res) {
   }
 }
 
+/**
+ * ─── AI rewrite review queue ──────────────────────────────────────────────
+ *
+ * Rewrites land in `staged_*` columns and stay invisible to readers until one of
+ * these is called. That is the whole safety model: the model can write as much
+ * as it likes, and nothing reaches the site without an explicit decision here.
+ */
+
+const REWRITE_QUEUE_STATUSES = ["ready", "failed", "applied"];
+
+/**
+ * GET /api/admin/rewrites — staged rewrites awaiting review.
+ *
+ * Returns the live article and the proposed replacement together, because the
+ * only useful question a reviewer can answer is "is this better, and is it
+ * true?" — which needs both texts side by side.
+ */
+async function getRewriteQueue(req, res) {
+  try {
+    const page = Math.max(1, parseInt(req.query.page, 10) || 1);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 10, 50);
+    const offset = (page - 1) * limit;
+
+    const requested = String(req.query.status || "ready").toLowerCase();
+    const status = REWRITE_QUEUE_STATUSES.includes(requested)
+      ? requested
+      : "ready";
+
+    // Whitelist-derived ordering, not user input.
+    const orderBy = status === "ready" ? "staged_at" : "updated_at";
+
+    const [rows] = await sequelize.query(
+      `SELECT id, title, description, source, category, image_url, published_at, url,
+              content AS live_content,
+              staged_title, staged_description, staged_content, staged_at,
+              rewrite_meta, rewrite_status, rewrite_attempts, rewrite_error
+         FROM news
+        WHERE rewrite_status = :status
+        ORDER BY ${orderBy} DESC
+        LIMIT :limit OFFSET :offset`,
+      { replacements: { status, limit, offset } },
+    );
+
+    const [[{ total }]] = await sequelize.query(
+      "SELECT COUNT(*) AS total FROM news WHERE rewrite_status = :status",
+      { replacements: { status } },
+    );
+
+    const totalCount = Number(total || 0);
+
+    res.json({
+      success: true,
+      data: rows.map((r) => ({
+        id: r.id,
+        source: r.source,
+        category: r.category,
+        image_url: r.image_url,
+        url: r.url,
+        published_at: r.published_at,
+        status: r.rewrite_status,
+        attempts: Number(r.rewrite_attempts || 0),
+        error: r.rewrite_error || null,
+        staged_at: r.staged_at,
+        meta: r.rewrite_meta || {},
+        live: {
+          title: r.title,
+          description: r.description || "",
+          content: r.live_content || "",
+        },
+        staged: {
+          title: r.staged_title || null,
+          description: r.staged_description || null,
+          content: r.staged_content || "",
+        },
+      })),
+      pagination: {
+        page,
+        limit,
+        total: totalCount,
+        totalPages: Math.ceil(totalCount / limit),
+      },
+    });
+  } catch (err) {
+    logger.error("admin.getRewriteQueue error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/** POST /api/admin/rewrites/:id/approve — publish a staged rewrite. */
+async function approveRewrite(req, res) {
+  try {
+    const result = await rewriteService.applyStaged(req.params.id, {
+      appliedBy: req.user?.id || "admin",
+    });
+
+    if (!result.ok) {
+      const notFound = result.reason === "not_found";
+      return res.status(notFound ? 404 : 409).json({
+        success: false,
+        message: notFound
+          ? "Article not found."
+          : "There is no staged rewrite to approve for this article.",
+      });
+    }
+
+    res.json({ success: true, message: "Rewrite published." });
+  } catch (err) {
+    logger.error("admin.approveRewrite error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/** POST /api/admin/rewrites/:id/reject — discard a staged rewrite. */
+async function rejectRewrite(req, res) {
+  try {
+    const result = await rewriteService.discardStaged(req.params.id, {
+      reason: req.body?.reason || `Rejected by ${req.user?.id || "admin"}`,
+    });
+
+    if (!result.ok) {
+      return res.status(result.reason === "not_found" ? 404 : 409).json({
+        success: false,
+        message:
+          result.reason === "not_found"
+            ? "Article not found."
+            : "There is no staged rewrite to reject for this article.",
+      });
+    }
+
+    res.json({ success: true, message: "Rewrite discarded." });
+  } catch (err) {
+    logger.error("admin.rejectRewrite error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/** GET /api/admin/rewrites/settings — switches, queue depth and spend. */
+async function getRewriteSettingsHandler(req, res) {
+  try {
+    const [settings, stats] = await Promise.all([
+      getRewriteSettings(),
+      rewriteService.getQueueStats(),
+    ]);
+
+    res.json({
+      success: true,
+      data: {
+        settings,
+        stats,
+        running: scheduler.isRewriteRunning(),
+        deepseekConfigured: aiService.isConfigured(),
+      },
+    });
+  } catch (err) {
+    logger.error("admin.getRewriteSettings error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * PATCH /api/admin/rewrites/settings — flip the switches.
+ *
+ * Deliberately separate from the queue endpoints: enabling auto-publish is the
+ * one action here that lets unreviewed AI content reach the live site, so it has
+ * its own call and gets logged.
+ */
+async function updateRewriteSettingsHandler(req, res) {
+  try {
+    const body = req.body || {};
+    const patch = {};
+
+    if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
+    if (typeof body.autoPublish === "boolean") patch.autoPublish = body.autoPublish;
+    if (body.batchSize !== undefined) patch.batchSize = body.batchSize;
+
+    if (Object.keys(patch).length === 0) {
+      return res.status(400).json({
+        success: false,
+        message: "Provide at least one of: enabled, autoPublish, batchSize.",
+      });
+    }
+
+    const settings = await updateRewriteSettings(patch, req.user?.id || "admin");
+    res.json({ success: true, data: settings });
+  } catch (err) {
+    logger.error("admin.updateRewriteSettings error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * POST /api/admin/rewrites/run — process a batch right now.
+ *
+ * Returns immediately rather than awaiting the batch. A batch is several paid
+ * API calls plus source fetches, so awaiting it would hold an admin request open
+ * for a minute and risk a proxy timeout. The UI polls the stats endpoint, which
+ * reports whether a batch is currently running.
+ */
+async function runRewriteBatchNow(req, res) {
+  try {
+    if (scheduler.isRewriteRunning()) {
+      return res.status(409).json({
+        success: false,
+        message: "A rewrite batch is already running.",
+      });
+    }
+
+    const settings = await getRewriteSettings();
+    const limit = Math.max(
+      1,
+      Math.min(Number(req.body?.limit) || settings.batchSize, 25),
+    );
+    // Explicit override so auto-publish can be tried without arming it for the
+    // scheduler; falls back to the stored setting.
+    const autoPublish =
+      typeof req.body?.autoPublish === "boolean"
+        ? req.body.autoPublish
+        : settings.autoPublish;
+
+    if (autoPublish) {
+      logger.warn(
+        `admin.runRewriteBatchNow: AUTO-PUBLISH run of ${limit} started by ${req.user?.id || "admin"}`,
+      );
+    }
+
+    // Fire and forget — result is visible via the queue and stats.
+    scheduler
+      .runRewriteBatch({ limit, autoPublish })
+      .then((result) => {
+        logger.info(
+          `admin.runRewriteBatchNow: claimed ${result.claimed}, staged ${result.ok}, published ${result.published}, failed ${result.failed}, cost $${result.cost_usd}`,
+        );
+      })
+      .catch((err) => {
+        logger.error(`admin.runRewriteBatchNow failed: ${err.message}`);
+      });
+
+    res.status(202).json({
+      success: true,
+      message: `Processing ${limit} article(s)${autoPublish ? " with auto-publish" : ""}. This can take a minute.`,
+    });
+  } catch (err) {
+    logger.error("admin.runRewriteBatchNow error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1311,6 +1565,12 @@ module.exports = {
   testEmail,
   getArticles,
   getArticleStats,
+  getRewriteQueue,
+  approveRewrite,
+  rejectRewrite,
+  getRewriteSettingsHandler,
+  updateRewriteSettingsHandler,
+  runRewriteBatchNow,
   getArticle,
   createArticle,
   updateArticle,

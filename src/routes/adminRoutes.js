@@ -50,6 +50,16 @@ router.delete("/articles/:id", adminController.deleteArticle);
 router.get("/analytics", adminController.getAnalytics);
 router.post("/test-email", adminController.testEmail);
 
+// ─── AI rewrite review queue ──────────────────────────────────────────────
+// All literal paths, registered before any ":id" route so none is swallowed by
+// a parameter match.
+router.get("/rewrites", adminController.getRewriteQueue);
+router.get("/rewrites/settings", adminController.getRewriteSettingsHandler);
+router.patch("/rewrites/settings", adminController.updateRewriteSettingsHandler);
+router.post("/rewrites/run", adminController.runRewriteBatchNow);
+router.post("/rewrites/:id/approve", adminController.approveRewrite);
+router.post("/rewrites/:id/reject", adminController.rejectRewrite);
+
 // Social publishing
 router.get("/social/config", socialController.getConfig);
 router.put("/social/config", socialController.saveConfig);

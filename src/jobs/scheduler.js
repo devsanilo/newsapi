@@ -7,6 +7,7 @@ const { addCrawlJob, cleanQueues } = require("./queue");
 const CrawlerSchedule = require("../models/CrawlerSchedule");
 const { purgeDueRequests } = require("../services/accountDeletionService");
 const rewriteService = require("../services/rewriteService");
+const { getRewriteSettings } = require("../services/rewriteSettings");
 const logger = require("../utils/logger");
 
 const ENV_CRON_SCHEDULE = normalizeSchedule(process.env.CRON_SCHEDULE);
@@ -194,21 +195,51 @@ function startMainSchedule(schedule) {
  * Rows are claimed atomically (FOR UPDATE SKIP LOCKED), so it is safe for more
  * than one process to run this.
  */
-async function runRewriteBatch({ limit } = {}) {
-  const batchSize =
-    Number(limit) || Number(process.env.REWRITE_BATCH_SIZE || 3);
+async function runRewriteBatch({ limit, autoPublish } = {}) {
+  const settings = await getRewriteSettings();
+  const batchSize = Number(limit) || settings.batchSize;
+  // Defaults to the stored setting, so the admin switch governs scheduled runs.
+  // An explicit argument is used by the "run now" button.
+  const shouldPublish =
+    autoPublish === undefined ? settings.autoPublish : Boolean(autoPublish);
 
+  // Owned here rather than by the cron handler, because the admin "run now"
+  // button calls this directly. Leaving it to the caller meant a manual run was
+  // invisible: concurrent manual batches were allowed, and the UI never showed
+  // that one was in progress.
+  if (runtimeState.is_rewriting) {
+    return {
+      claimed: 0,
+      ok: 0,
+      failed: 0,
+      published: 0,
+      cost_usd: 0,
+      skipped: "already_running",
+    };
+  }
+  runtimeState.is_rewriting = true;
+
+  try {
+    return await processRewriteBatch({ batchSize, shouldPublish });
+  } finally {
+    runtimeState.is_rewriting = false;
+  }
+}
+
+/** The body of a batch, split out so the running flag is always cleared. */
+async function processRewriteBatch({ batchSize, shouldPublish }) {
   const claimed = await rewriteService.claimBatch({
     limit: batchSize,
     order: process.env.REWRITE_ORDER || "recent",
   });
 
   if (claimed.length === 0) {
-    return { claimed: 0, ok: 0, failed: 0, cost_usd: 0 };
+    return { claimed: 0, ok: 0, failed: 0, published: 0, cost_usd: 0 };
   }
 
   let ok = 0;
   let failed = 0;
+  let published = 0;
   let cost = 0;
   let environmentError = false;
 
@@ -217,6 +248,21 @@ async function runRewriteBatch({ limit } = {}) {
     if (result.ok) {
       ok += 1;
       cost += Number(result.meta?.cost_usd || 0);
+
+      if (shouldPublish) {
+        // The guard rails have already passed at this point, so this is the
+        // only quality check standing between the model and the live site.
+        const applied = await rewriteService.applyStaged(row.id, {
+          appliedBy: "auto-publish",
+        });
+        if (applied.ok) {
+          published += 1;
+        } else {
+          logger.warn(
+            `Cron: rewrite for ${row.id} staged but not published: ${applied.reason}`,
+          );
+        }
+      }
     } else {
       failed += 1;
       // Once the environment is broken (no key, no scraper) every remaining
@@ -235,6 +281,7 @@ async function runRewriteBatch({ limit } = {}) {
     claimed: claimed.length,
     ok,
     failed,
+    published,
     cost_usd: Number(cost.toFixed(6)),
     environmentError,
   };
@@ -243,27 +290,22 @@ async function runRewriteBatch({ limit } = {}) {
 /**
  * AI rewrite batch.
  *
- * OFF BY DEFAULT (`REWRITE_ENABLED=true` to arm). It spends money on a
- * third-party API and writes to the production `news` table, so it must never
- * start doing that merely because a new deploy booted. Output is staged only —
- * nothing becomes reader-visible without an explicit approval.
+ * The cron is ALWAYS scheduled; whether each tick actually does anything is
+ * decided by the stored setting, read on every run. Scheduling only when the
+ * env var was set meant flipping the switch needed a redeploy, which defeats the
+ * point of having one. Reading one row every interval costs nothing.
+ *
+ * Both switches default to off — one spends money, the other publishes
+ * unreviewed AI content to the live site.
  */
 function ensureRewriteSchedule() {
-  const enabled =
-    String(process.env.REWRITE_ENABLED || "false").toLowerCase() === "true";
-
-  if (!enabled) {
-    logger.info(
-      "AI rewrite schedule disabled (set REWRITE_ENABLED=true to enable).",
-    );
-    return;
-  }
-
   if (rewriteTask) return;
 
   const schedule = process.env.REWRITE_CRON || "*/10 * * * *";
   if (!cron.validate(schedule)) {
-    logger.error(`Invalid REWRITE_CRON "${schedule}" — rewrite schedule not started.`);
+    logger.error(
+      `Invalid REWRITE_CRON "${schedule}" — rewrite schedule not started.`,
+    );
     return;
   }
 
@@ -272,22 +314,40 @@ function ensureRewriteSchedule() {
       logger.warn("Cron: Previous AI rewrite batch still running, skipping tick");
       return;
     }
-    runtimeState.is_rewriting = true;
+
+    let settings;
     try {
-      const result = await runRewriteBatch();
+      settings = await getRewriteSettings();
+    } catch (error) {
+      logger.error(`Cron: could not read rewrite settings: ${error.message}`);
+      return;
+    }
+
+    if (!settings.enabled) {
+      logger.debug("Cron: AI rewrite is switched off — skipping tick");
+      return;
+    }
+
+    try {
+      const result = await runRewriteBatch({
+        limit: settings.batchSize,
+        autoPublish: settings.autoPublish,
+      });
       if (result.claimed > 0) {
         logger.info(
-          `Cron: AI rewrite batch — claimed ${result.claimed}, staged ${result.ok}, failed ${result.failed}, cost $${result.cost_usd}`,
+          `Cron: AI rewrite — claimed ${result.claimed}, staged ${result.ok}, ` +
+            `published ${result.published}, failed ${result.failed}, cost $${result.cost_usd}` +
+            `${settings.autoPublish ? " [AUTO-PUBLISH]" : ""}`,
         );
       }
     } catch (error) {
       logger.error(`Cron: AI rewrite batch failed: ${error.message}`);
-    } finally {
-      runtimeState.is_rewriting = false;
     }
   });
 
-  logger.info(`AI rewrite scheduled with "${schedule}" (staging only)`);
+  logger.info(
+    `AI rewrite scheduled with "${schedule}" (runs only when enabled in admin settings)`,
+  );
 }
 
 /**
@@ -405,4 +465,6 @@ module.exports = {
   getSchedulerState,
   updateSchedulerConfig,
   runRewriteBatch,
+  // Read by the admin queue so the UI can show whether a batch is in flight.
+  isRewriteRunning: () => runtimeState.is_rewriting,
 };

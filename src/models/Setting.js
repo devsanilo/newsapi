@@ -79,6 +79,11 @@ Setting.KEYS = {
   SOCIAL_X_API_SECRET: "social_x_api_secret",
   SOCIAL_X_ACCESS_TOKEN: "social_x_access_token",
   SOCIAL_X_ACCESS_SECRET: "social_x_access_secret",
+
+  // AI rewrite pipeline
+  REWRITE_ENABLED: "rewrite_enabled",
+  REWRITE_AUTO_PUBLISH: "rewrite_auto_publish",
+  REWRITE_BATCH_SIZE: "rewrite_batch_size",
 };
 
 // Get all settings as an object
@@ -151,6 +156,12 @@ Setting.initializeDefaults = async function () {
     { key: this.KEYS.SOCIAL_X_API_SECRET, value: "", description: "X API secret", category: "social" },
     { key: this.KEYS.SOCIAL_X_ACCESS_TOKEN, value: "", description: "X access token", category: "social" },
     { key: this.KEYS.SOCIAL_X_ACCESS_SECRET, value: "", description: "X access token secret", category: "social" },
+
+    // AI rewrite pipeline. Both switches default to off: one spends money on a
+    // third-party API, the other publishes AI content to the live site.
+    { key: this.KEYS.REWRITE_ENABLED, value: "false", description: "Run the AI rewrite pipeline in the background", category: "rewrite" },
+    { key: this.KEYS.REWRITE_AUTO_PUBLISH, value: "false", description: "Publish rewrites without human review", category: "rewrite" },
+    { key: this.KEYS.REWRITE_BATCH_SIZE, value: "3", description: "Articles rewritten per scheduled run", category: "rewrite" },
   ];
 
   for (const def of defaults) {
