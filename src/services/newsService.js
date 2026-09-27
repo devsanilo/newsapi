@@ -517,6 +517,12 @@ class NewsService {
       category: article.category,
       url: article.url,
       is_original: Boolean(article.is_original),
+      // 'original' | 'rewritten' | 'aggregated'. Needed by the clients: a
+      // rewrite is a full article we own, and it deliberately keeps
+      // is_original = 0 (it is not a Trenxi original), so the UI cannot use
+      // is_original to decide whether there is a body worth rendering.
+      content_type:
+        article.content_type || (article.is_original ? "original" : "aggregated"),
       is_published: Boolean(article.is_published),
       author_id: article.author_id || null,
       tags: tags || [],
