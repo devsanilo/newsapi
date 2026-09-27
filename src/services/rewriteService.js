@@ -24,7 +24,7 @@ const logger = require("../utils/logger");
 const aiService = require("./aiService");
 const { generateHash } = require("../utils/hash");
 
-const PROMPT_VERSION = "rewrite-v1";
+const PROMPT_VERSION = "rewrite-v2";
 
 const MIN_WORDS = Number(process.env.REWRITE_MIN_WORDS || 250);
 const MAX_WORDS = Number(process.env.REWRITE_MAX_WORDS || 1200);
@@ -36,15 +36,46 @@ const MAX_ATTEMPTS = Number(process.env.REWRITE_MAX_ATTEMPTS || 3);
 // queue. Generous by default so a legitimately slow article is not stolen from
 // a run that is still working on it.
 const CLAIM_TIMEOUT_MINUTES = Number(process.env.REWRITE_CLAIM_TIMEOUT_MINUTES || 15);
-// Longest run of consecutive words allowed to appear in both source and output.
-// Above this, the model is transcribing rather than rewriting.
-const MAX_SHARED_RUN = Number(process.env.REWRITE_MAX_SHARED_RUN || 12);
+
+// Measuring the LONGEST shared run turned out to be the wrong question, and it
+// was rejecting almost everything. News copy is dense with unbreakable chains
+// of names, titles and figures — "Shell Nigeria Exploration and Production
+// Company Limited (SNEPCo), Esso Exploration and Production Nigeria
+// (Deepwater) Limited, and Nigerian Agip Exploration Limited" is one 22-word
+// stretch that MUST be reproduced exactly; it is a company name, not
+// plagiarism. A flat 12-word limit failed genuinely well-rewritten articles
+// (a 671-word rewrite was rejected on a single 56-word proper-noun chain).
+//
+// Measured on real output, this guard was rejecting 6 of 10 good rewrites.
+//
+// The question that actually matters is: how much of the OUTPUT is verbatim?
+// A faithful rewrite that repeats a 56-word entity chain inside 671 words of
+// its own prose is 8% copied and clearly original. An article that lifts a
+// 269-word block is mostly transcription. So: judge by COVERAGE RATIO.
+const MAX_COPY_RATIO = Number(process.env.REWRITE_MAX_COPY_RATIO || 0.25);
+
+// Runs shorter than this are ordinary phrasing ("the company said in a
+// statement") and are not evidence of copying, so they are not counted.
+const MIN_RUN_TO_COUNT = Number(process.env.REWRITE_MIN_RUN_TO_COUNT || 8);
+
+// Backstop for a single unbroken run. Redundant with the ratio for short
+// articles, but it catches a long article that lifts one huge block and pads
+// the rest — a 269- or 319-word run is always transcription, even at 20%
+// coverage.
+const MAX_SHARED_RUN = Number(process.env.REWRITE_MAX_SHARED_RUN || 60);
 
 // Absolute ceiling even for quoted material. The prompt permits reproducing a
 // direct quotation verbatim, which is ordinary journalism — but a single quote
 // running to 80+ words means the model is quoting the article rather than
 // writing one.
 const MAX_TOTAL_SHARED_RUN = Number(process.env.REWRITE_MAX_QUOTE_RUN || 80);
+
+// The word floor is capped against the source's own length. Demanding 250 words
+// from a 205-word source is impossible without padding, and it was rejecting
+// complete, faithful rewrites of 189-234 words purely on length (4 of 10
+// failures). Below this cap the floor is 85% of the source, never under 120.
+const MIN_WORDS_SOURCE_FACTOR = Number(process.env.REWRITE_MIN_WORDS_FACTOR || 0.85);
+const MIN_WORDS_FLOOR = Number(process.env.REWRITE_MIN_WORDS_FLOOR || 120);
 const SOURCE_CHAR_LIMIT = Number(process.env.REWRITE_SOURCE_CHARS || 8000);
 
 const SYSTEM_PROMPT = `You are a careful news desk editor for Trenxi, a Nigerian news publication.
@@ -52,12 +83,19 @@ const SYSTEM_PROMPT = `You are a careful news desk editor for Trenxi, a Nigerian
 You are given a source article from another publisher. Write a NEW article that reports the same events in your own words.
 
 Rules you must follow:
-- Write entirely in your own sentences. Never copy a phrase longer than a few words from the source.
+- REWRITE EVERY SENTENCE. Rebuild each sentence in your own words and your own clause order. Do not reuse the source's sentences or phrasing.
+- Keep the FACTS, not the wording. Names, numbers, dates and places must stay accurate and may be repeated exactly — but everything AROUND them must be your own writing.
+- The most common mistake is copying a whole sentence because it contains figures. Keep the figures; replace the sentence. A sentence that matches the source for more than a few consecutive words is a failure.
 - Use ONLY facts present in the source. Never invent names, numbers, quotes, dates, places or causes. If the source does not state something, leave it out.
 - No fabricated quotations. Direct quotes may only be reproduced if they appear verbatim in the source, and must be attributed as they are there.
 - Lead with what matters most. Write for a general Nigerian and international audience.
 - Neutral, factual tone. No opinion, no sensationalism, no clickbait.
 - Do not mention the source publication by name, and do not refer to "the source" or "this article".
+
+Example of the transformation required:
+  Source: "The regulator is expected to confirm later this week a 4% increase, the highest level since the summer of 2023."
+  Good:   "A 4% rise is set to be confirmed by the regulator within days, the steepest since the summer of 2023."
+  Bad:    "The regulator is expected to confirm later this week a 4% increase, the highest level since the summer of 2023."
 
 Return a JSON object with exactly these keys:
 - "title": a new headline, under 110 characters
@@ -112,6 +150,93 @@ function longestSharedRun(a, b) {
   }
 
   return best;
+}
+
+/** Normalise to comparable lowercase word tokens. */
+const toTokens = (s) =>
+  String(s || "")
+    .toLowerCase()
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .filter(Boolean);
+
+/**
+ * Measure how much of `a` (the model's output) was lifted from `b` (the source).
+ *
+ * Returns the longest run, that run's text, and `coverage` — the number of
+ * words of `a` that sit inside a shared run of at least `minRun` words. Each
+ * output word is counted once, so overlapping spans cannot inflate the figure.
+ *
+ * Coverage is what distinguishes a real rewrite that legitimately repeats a
+ * company name from a model that transcribed the article: the first is a small
+ * fraction of a long text, the second is most of it.
+ */
+function overlapReport(a, b, minRun = MIN_RUN_TO_COUNT) {
+  const rows = toTokens(a);
+  const cols = toTokens(b);
+  if (rows.length === 0 || cols.length === 0) {
+    return { longest: 0, longestText: "", coverage: 0, ratio: 0, words: rows.length };
+  }
+
+  // Collect maximal shared runs. For a fixed diagonal (i - j constant) the run
+  // length grows with j, so the largest j on each diagonal is the maximal run.
+  const byDiagonal = new Map();
+  let prev = new Uint32Array(cols.length + 1);
+  let curr = new Uint32Array(cols.length + 1);
+
+  for (let i = 1; i <= rows.length; i += 1) {
+    for (let j = 1; j <= cols.length; j += 1) {
+      if (rows[i - 1] === cols[j - 1]) {
+        const run = prev[j - 1] + 1;
+        curr[j] = run;
+        if (run >= minRun) {
+          const key = i - j;
+          const seen = byDiagonal.get(key);
+          if (!seen || run > seen.len) {
+            byDiagonal.set(key, { end: i, len: run });
+          }
+        }
+      } else {
+        curr[j] = 0;
+      }
+    }
+    const swap = prev;
+    prev = curr;
+    curr = swap;
+    curr.fill(0);
+  }
+
+  const spans = [...byDiagonal.values()]
+    .map(({ end, len }) => ({ start: end - len, end }))
+    .sort((x, y) => x.start - y.start);
+
+  let coverage = 0;
+  let cursor = 0;
+  for (const span of spans) {
+    const start = Math.max(span.start, cursor);
+    if (span.end > start) {
+      coverage += span.end - start;
+      cursor = span.end;
+    }
+  }
+
+  let longest = 0;
+  let longestSpan = null;
+  for (const span of spans) {
+    const len = span.end - span.start;
+    if (len > longest) {
+      longest = len;
+      longestSpan = span;
+    }
+  }
+
+  return {
+    longest,
+    longestText: longestSpan ? rows.slice(longestSpan.start, longestSpan.end).join(" ") : "",
+    coverage,
+    ratio: rows.length ? coverage / rows.length : 0,
+    words: rows.length,
+  };
 }
 
 /**
@@ -191,10 +316,19 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
   }
 
   const words = wordCount(content);
-  if (words < MIN_WORDS) {
+
+  // Never demand more words than the source can actually support, or the model
+  // is forced to pad. Short sources get a proportionally lower floor.
+  const sourceWords = wordCount(sourceText);
+  const minWords =
+    sourceWords > 0
+      ? Math.min(MIN_WORDS, Math.max(MIN_WORDS_FLOOR, Math.floor(sourceWords * MIN_WORDS_SOURCE_FACTOR)))
+      : MIN_WORDS;
+
+  if (words < minWords) {
     return {
       ok: false,
-      reason: `Too short: ${words} words (minimum ${MIN_WORDS})`,
+      reason: `Too short: ${words} words (minimum ${minWords}, source had ${sourceWords})`,
     };
   }
   if (words > MAX_WORDS) {
@@ -216,11 +350,26 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
   // Two measurements, because they answer different questions.
   //   prose  — is the model's own writing original? (the thing that matters)
   //   total  — is it quoting the whole article verbatim?
-  const proseShared = longestSharedRun(stripQuoted(content), stripQuoted(sourceText));
-  if (proseShared >= MAX_SHARED_RUN) {
+  //
+  // Quoted spans are removed first: the prompt permits reproducing a direct
+  // quotation verbatim, and news copy is full of them. The prose check judges
+  // COVERAGE — what fraction of the output is verbatim — not the single longest
+  // run, because news prose contains long unbreakable chains of names and
+  // figures that must be reproduced exactly and are not evidence of copying.
+  const prose = overlapReport(stripQuoted(content), stripQuoted(sourceText));
+
+  if (prose.longest >= MAX_SHARED_RUN) {
     return {
       ok: false,
-      reason: `Still verbatim: ${proseShared}-word run shared with the source`,
+      reason: `Still verbatim: ${prose.longest}-word run shared with the source`,
+      detail: prose.longestText.slice(0, 300),
+    };
+  }
+
+  if (prose.ratio > MAX_COPY_RATIO) {
+    return {
+      ok: false,
+      reason: `Copies too much: ${Math.round(prose.ratio * 100)}% of the output (${prose.coverage} of ${prose.words} words) is verbatim from the source, limit ${Math.round(MAX_COPY_RATIO * 100)}%`,
     };
   }
 
@@ -247,7 +396,9 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
       content,
       tags,
       words,
-      proseShared,
+      proseShared: prose.longest,
+      proseRatio: prose.ratio,
+      minWords,
       totalShared,
     },
   };
@@ -372,6 +523,47 @@ function isEnvironmentError(err) {
   return Boolean(err?.isConfigError || err?.scraperUnavailable);
 }
 
+function buildUserPrompt(source) {
+  return `SOURCE TITLE: ${source.title}
+
+SOURCE STANDFIRST: ${source.description}
+
+SOURCE ARTICLE:
+${source.text}
+
+Write the new Trenxi article now, as a JSON object.`;
+}
+
+/**
+ * Second-pass prompt used when the first draft failed validation.
+ *
+ * The model is shown its own rejected text and the passage that matched the
+ * source, so the instruction is concrete rather than abstract ("be more
+ * original"). Returns null when the failure was not about copying, because
+ * repeating the same request would not help.
+ */
+function buildRepairPrompt(source, parsed, verdict) {
+  const copied = verdict.detail
+    ? `\nThis passage from your draft was copied almost word-for-word from the source:\n"${verdict.detail}"\n`
+    : "";
+
+  return `Your previous draft was rejected. Reason: ${verdict.reason}
+${copied}
+Here is your rejected draft:
+${parsed?.content || ""}
+
+Rewrite the article again from the source below. This time rebuild EVERY sentence in your own words and your own order. Keep all names, numbers, dates and quotes accurate, but do not reuse the source's sentences — especially sentences that contain figures, which is where you copied before. Do not include the passage above in its original form.
+
+SOURCE TITLE: ${source.title}
+
+SOURCE STANDFIRST: ${source.description}
+
+SOURCE ARTICLE:
+${source.text}
+
+Return the corrected JSON object now.`;
+}
+
 /**
  * Generate + stage a rewrite for one already-claimed row.
  *
@@ -399,24 +591,47 @@ async function rewriteRow(row, deps = {}) {
 
     const response = await chat({
       system: SYSTEM_PROMPT,
-      user: `SOURCE TITLE: ${source.title}
-
-SOURCE STANDFIRST: ${source.description}
-
-SOURCE ARTICLE:
-${source.text}
-
-Write the new Trenxi article now, as a JSON object.`,
+      user: buildUserPrompt(source),
       json: true,
       maxTokens: 3000,
       temperature: 0.6,
     });
 
-    const parsed = aiService.parseJson(response.content);
-    const verdict = validateRewrite(parsed, {
+    let parsed = aiService.parseJson(response.content);
+    let verdict = validateRewrite(parsed, {
       sourceText: source.text,
       sourceTitle: source.title,
     });
+    let repair = null;
+
+    // A rejection used to throw away a paid call. Measured on real output, the
+    // dominant failure was the model transcribing dense factual passages
+    // verbatim — 41-49% of the finished article matched the source word for
+    // word. Telling the model exactly what it copied and asking again converts
+    // most of those into usable articles for one extra call, which is far
+    // cheaper than losing the article (and the attempt) entirely.
+    if (!verdict.ok) {
+      repair = await chat({
+        system: SYSTEM_PROMPT,
+        user: buildRepairPrompt(source, parsed, verdict),
+        json: true,
+        maxTokens: 3000,
+        // Higher than the first pass: paraphrase divergence is exactly what is
+        // missing, and there is no second chance after this.
+        temperature: 0.85,
+      });
+
+      const repaired = aiService.parseJson(repair.content);
+      const recheck = validateRewrite(repaired, {
+        sourceText: source.text,
+        sourceTitle: source.title,
+      });
+
+      if (recheck.ok) {
+        parsed = repaired;
+        verdict = recheck;
+      }
+    }
 
     if (!verdict.ok) {
       await markFailed(row.id, verdict.reason, { retryable: true });
@@ -427,11 +642,13 @@ Write the new Trenxi article now, as a JSON object.`,
       prompt_version: PROMPT_VERSION,
       model: response.model,
       usage: response.usage,
-      cost_usd: Number(response.costUsd || 0),
-      ms: response.ms,
+      cost_usd: Number(response.costUsd || 0) + Number(repair?.costUsd || 0),
+      ms: (response.ms || 0) + (repair?.ms || 0),
       finish_reason: response.finishReason || null,
+      repaired: Boolean(repair),
       words: verdict.value.words,
       shared_run: verdict.value.proseShared,
+      copy_ratio: verdict.value.proseRatio,
       total_shared_run: verdict.value.totalShared,
       source_chars: source.text.length,
       generated_at: new Date().toISOString(),
@@ -595,6 +812,7 @@ module.exports = {
   fetchSourceText,
   validateRewrite,
   longestSharedRun,
+  overlapReport,
   stripQuoted,
   applyStaged,
   discardStaged,
@@ -603,11 +821,17 @@ module.exports = {
   isEnvironmentError,
   getQueueStats,
   SYSTEM_PROMPT,
+  buildUserPrompt,
+  buildRepairPrompt,
   PROMPT_VERSION,
   MIN_WORDS,
   MAX_WORDS,
   MAX_ATTEMPTS,
   MAX_SHARED_RUN,
+  MAX_COPY_RATIO,
+  MIN_RUN_TO_COUNT,
+  MIN_WORDS_SOURCE_FACTOR,
+  MIN_WORDS_FLOOR,
   MAX_TOTAL_SHARED_RUN,
   CLAIM_TIMEOUT_MINUTES,
 };
