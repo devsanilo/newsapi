@@ -84,6 +84,10 @@ Setting.KEYS = {
   REWRITE_ENABLED: "rewrite_enabled",
   REWRITE_AUTO_PUBLISH: "rewrite_auto_publish",
   REWRITE_BATCH_SIZE: "rewrite_batch_size",
+  // WordPress ingestion runs on its own schedule, independent of the crawl
+  // scheduler, so stopping the crawler stops highlights without also stopping
+  // article production.
+  WP_INGEST_ENABLED: "wp_ingest_enabled",
 };
 
 // Get all settings as an object
@@ -162,6 +166,7 @@ Setting.initializeDefaults = async function () {
     { key: this.KEYS.REWRITE_ENABLED, value: "false", description: "Run the AI rewrite pipeline in the background", category: "rewrite" },
     { key: this.KEYS.REWRITE_AUTO_PUBLISH, value: "false", description: "Publish rewrites without human review", category: "rewrite" },
     { key: this.KEYS.REWRITE_BATCH_SIZE, value: "3", description: "Articles rewritten per scheduled run", category: "rewrite" },
+    { key: this.KEYS.WP_INGEST_ENABLED, value: "true", description: "Ingest WordPress posts on their own schedule, independently of the crawler", category: "rewrite" },
   ];
 
   for (const def of defaults) {

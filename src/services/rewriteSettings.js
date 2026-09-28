@@ -17,6 +17,11 @@ const DEFAULTS = {
   enabled: false,
   autoPublish: false,
   batchSize: 3,
+  // Runs independently of the crawl scheduler. Defaults ON because the whole
+  // point of the WordPress pipeline is producing articles, and tying it to the
+  // crawler switch meant stopping the crawler silently stopped article
+  // production too. It is a no-op until sources are flagged WordPress.
+  wpIngest: true,
 };
 
 /** Interpret a stored value, falling back to the environment, then a default. */
@@ -49,10 +54,11 @@ function resolveNumber(storedValue, envName, fallback) {
  */
 async function getRewriteSettings() {
   try {
-    const [enabled, autoPublish, batchSize] = await Promise.all([
+    const [enabled, autoPublish, batchSize, wpIngest] = await Promise.all([
       Setting.getValue(Setting.KEYS.REWRITE_ENABLED, null),
       Setting.getValue(Setting.KEYS.REWRITE_AUTO_PUBLISH, null),
       Setting.getValue(Setting.KEYS.REWRITE_BATCH_SIZE, null),
+      Setting.getValue(Setting.KEYS.WP_INGEST_ENABLED, null),
     ]);
 
     return {
@@ -66,6 +72,7 @@ async function getRewriteSettings() {
         resolveNumber(batchSize, "REWRITE_BATCH_SIZE", DEFAULTS.batchSize),
         50,
       ),
+      wpIngest: resolveBoolean(wpIngest, "WP_INGEST_ENABLED", DEFAULTS.wpIngest),
     };
   } catch (err) {
     logger.warn(
@@ -76,8 +83,19 @@ async function getRewriteSettings() {
 }
 
 /** Persist a subset of settings. Omitted keys are left untouched. */
-async function updateRewriteSettings({ enabled, autoPublish, batchSize }, updatedBy) {
+async function updateRewriteSettings({ enabled, autoPublish, batchSize, wpIngest }, updatedBy) {
   const writes = [];
+
+  if (wpIngest !== undefined) {
+    writes.push(
+      Setting.setValue(
+        Setting.KEYS.WP_INGEST_ENABLED,
+        wpIngest ? "true" : "false",
+        "Ingest WordPress posts on their own schedule, independently of the crawler",
+        "rewrite",
+      ),
+    );
+  }
 
   if (enabled !== undefined) {
     writes.push(

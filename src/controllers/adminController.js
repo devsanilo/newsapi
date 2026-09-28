@@ -1467,13 +1467,16 @@ async function getRewriteSettingsHandler(req, res) {
       getRewriteSettings(),
       rewriteService.getQueueStats(),
     ]);
-
     res.json({
       success: true,
       data: {
         settings,
         stats,
         running: scheduler.isRewriteRunning(),
+        wpIngestRunning: typeof scheduler.isWpIngestRunning === "function"
+          ? scheduler.isWpIngestRunning()
+          : false,
+        wpIngestCron: process.env.WP_INGEST_CRON || "*/15 * * * *",
         deepseekConfigured: aiService.isConfigured(),
       },
     });
@@ -1498,11 +1501,12 @@ async function updateRewriteSettingsHandler(req, res) {
     if (typeof body.enabled === "boolean") patch.enabled = body.enabled;
     if (typeof body.autoPublish === "boolean") patch.autoPublish = body.autoPublish;
     if (body.batchSize !== undefined) patch.batchSize = body.batchSize;
+    if (typeof body.wpIngest === "boolean") patch.wpIngest = body.wpIngest;
 
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Provide at least one of: enabled, autoPublish, batchSize.",
+        message: "Provide at least one of: enabled, autoPublish, batchSize, wpIngest.",
       });
     }
 
@@ -1732,6 +1736,43 @@ async function publishManyAsIsHandler(req, res, next) {
   }
 }
 
+/**
+ * POST /api/admin/wordpress/ingest-now
+ *
+ * Fetch the latest WordPress posts immediately, without waiting for the cron
+ * and without the crawl scheduler having to be running. Fire-and-forget: a pass
+ * over every publisher takes long enough that holding the request open invites
+ * a proxy timeout, and the outcome is logged either way.
+ */
+async function ingestWordPressNow(req, res, next) {
+  try {
+    if (typeof scheduler.runWordPressIngestNow !== "function") {
+      return res.status(501).json({ success: false, message: "Ingest is not available in this build." });
+    }
+    if (scheduler.isWpIngestRunning()) {
+      return res.status(409).json({
+        success: false,
+        message: "A WordPress fetch is already running.",
+      });
+    }
+
+    scheduler
+      .runWordPressIngestNow()
+      .then((result) =>
+        logger.info(`admin: WordPress fetch finished — ${JSON.stringify(result)}`),
+      )
+      .catch((err) => logger.error(`admin: WordPress fetch failed: ${err.message}`));
+
+    res.status(202).json({
+      success: true,
+      message: "Fetching the latest WordPress posts.",
+    });
+  } catch (err) {
+    logger.error("admin.ingestWordPressNow error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1747,6 +1788,7 @@ module.exports = {
   getWordPressSummary,
   publishAsIsHandler,
   publishManyAsIsHandler,
+  ingestWordPressNow,
   getRewriteQueue,
   approveRewrite,
   rejectRewrite,

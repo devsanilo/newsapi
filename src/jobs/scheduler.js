@@ -17,12 +17,14 @@ let scheduledTask = null;
 let cleanupTask = null;
 let deletionPurgeTask = null;
 let rewriteTask = null;
+let wpIngestTask = null;
 
 const runtimeState = {
   cron_schedule: DEFAULT_CRON_SCHEDULE,
   is_enabled: true,
   is_running: false,
   is_rewriting: false,
+  is_ingesting_wp: false,
   last_started_at: null,
   last_finished_at: null,
   last_result: null,
@@ -351,6 +353,92 @@ function ensureRewriteSchedule() {
 }
 
 /**
+ * WordPress ingestion, on its own schedule.
+ *
+ * The crawl scheduler runs BOTH passes in one job, so stopping it — which is
+ * what "Stop Scheduler" does — used to stop article production along with the
+ * highlights. The two are not the same thing: RSS supplies highlights, and
+ * WordPress supplies the posts that become articles, so wanting to pause one
+ * while keeping the other is a normal thing to want.
+ *
+ * Runs here rather than in the worker on purpose. The rewrite pipeline already
+ * runs from this process, and ingestion is what feeds it, so this keeps the
+ * two halves of article production in one place and does not depend on the
+ * worker container being up.
+ *
+ * Safe to run alongside the crawl pass: ingestion is idempotent (deduplicated
+ * on url and title hash), so an overlap just re-checks the same posts.
+ */
+function ensureWpIngestSchedule() {
+  if (wpIngestTask) return;
+
+  const schedule = process.env.WP_INGEST_CRON || "*/15 * * * *";
+  if (!cron.validate(schedule)) {
+    logger.error(
+      `Invalid WP_INGEST_CRON "${schedule}" — WordPress ingest schedule not started.`,
+    );
+    return;
+  }
+
+  wpIngestTask = cron.schedule(schedule, async () => {
+    let settings;
+    try {
+      settings = await getRewriteSettings();
+    } catch (error) {
+      logger.error(`Cron: could not read settings: ${error.message}`);
+      return;
+    }
+
+    if (!settings.wpIngest) {
+      logger.debug("Cron: WordPress ingest is switched off — skipping tick");
+      return;
+    }
+
+    try {
+      const result = await runWordPressIngestNow();
+      if (result?.skipped) {
+        logger.warn("Cron: Previous WordPress ingest still running, skipping tick");
+      } else if (result && (result.articles > 0 || result.errors > 0)) {
+        logger.info(
+          `Cron: WordPress ingest — ${result.articles} post(s) fetched, ` +
+            `${result.inserted} new, ${result.skipped} already known, ${result.errors} error(s)`,
+        );
+      }
+    } catch (error) {
+      logger.error(`Cron: WordPress ingest failed: ${error.message}`);
+    }
+  });
+
+  logger.info(
+    `WordPress ingest scheduled with "${schedule}" (independent of the crawl scheduler; runs only when enabled in admin settings)`,
+  );
+}
+
+/**
+ * Run one WordPress ingest pass now.
+ *
+ * Owns the in-flight flag so a scheduled tick, the admin "fetch now" button and
+ * anything else cannot run two passes at once — they would duplicate requests
+ * to every publisher for no benefit.
+ *
+ * Returns `{ skipped: true }` when a pass is already running rather than
+ * queueing another.
+ */
+async function runWordPressIngestNow() {
+  if (runtimeState.is_ingesting_wp) return { skipped: true };
+
+  runtimeState.is_ingesting_wp = true;
+  try {
+    // Required lazily so the API process does not pull in the crawlers unless
+    // this actually runs.
+    const crawlerService = require("../services/crawlerService");
+    return await crawlerService.runWordPressIngest();
+  } finally {
+    runtimeState.is_ingesting_wp = false;
+  }
+}
+
+/**
  * Start scheduler based on persisted config
  */
 async function startScheduler() {
@@ -363,6 +451,9 @@ async function startScheduler() {
   ensureCleanupSchedule();
   ensureDeletionPurgeSchedule();
   ensureRewriteSchedule();
+  // Deliberately outside the is_enabled check below: the crawler switch governs
+  // the crawl, not whether articles are produced.
+  ensureWpIngestSchedule();
 
   if (runtimeState.is_enabled) {
     startMainSchedule(runtimeState.cron_schedule);
@@ -393,6 +484,11 @@ function stopScheduler() {
     rewriteTask.stop();
     rewriteTask = null;
     logger.info("AI rewrite scheduler stopped");
+  }
+  if (wpIngestTask) {
+    wpIngestTask.stop();
+    wpIngestTask = null;
+    logger.info("WordPress ingest scheduler stopped");
   }
 }
 
@@ -467,4 +563,7 @@ module.exports = {
   runRewriteBatch,
   // Read by the admin queue so the UI can show whether a batch is in flight.
   isRewriteRunning: () => runtimeState.is_rewriting,
+  // Same idea for the WordPress ingest, which runs on its own schedule.
+  isWpIngestRunning: () => runtimeState.is_ingesting_wp,
+  runWordPressIngestNow,
 };

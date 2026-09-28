@@ -46,6 +46,7 @@ router.post("/corpus", adminController.runCorpusAction);
 // into Trenxi articles or published verbatim. Kept apart from the RSS screens
 // because the two corpora behave differently in every respect.
 router.get("/wordpress", adminController.getWordPressSummary);
+router.post("/wordpress/ingest-now", adminController.ingestWordPressNow);
 router.post("/wordpress/publish-as-is", adminController.publishManyAsIsHandler);
 router.post("/wordpress/:id/publish-as-is", adminController.publishAsIsHandler);
 router.get("/articles/:id", adminController.getArticle);
