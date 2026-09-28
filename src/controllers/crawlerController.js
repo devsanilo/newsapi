@@ -7,6 +7,7 @@ const cheerio = require("cheerio");
 const fs = require("fs/promises");
 const path = require("path");
 const crawlerService = require("../services/crawlerService");
+const sourceDetectionService = require("../services/sourceDetectionService");
 const {
   triggerImmediateCrawl,
   getSchedulerState,
@@ -17,6 +18,61 @@ const News = require("../models/News");
 const logger = require("../utils/logger");
 
 class CrawlerController {
+  /**
+   * POST /api/crawler/detect-wordpress
+   *
+   * Probe every active source for a WordPress REST API and record the answer.
+   *
+   * This exists as an admin action rather than a deploy-time step because the
+   * answer lives in the database, not in the code: a publisher's stack changes,
+   * and the new columns default every source to 'rss', so a fresh deployment
+   * ingests highlights only until this has been run once.
+   *
+   * Body: { dryRun?: boolean, only?: string[] }
+   */
+  async detectWordPressSources(req, res, next) {
+    try {
+      const dryRun = req.body?.dryRun !== false;
+      const only = Array.isArray(req.body?.only) ? req.body.only : null;
+
+      logger.info(
+        `WordPress source detection requested (${dryRun ? "dry run" : "applying"})`,
+      );
+
+      const detection = await sourceDetectionService.detect({ only });
+      const applied = dryRun
+        ? { wordpress: 0, rss: 0, changed: 0 }
+        : await sourceDetectionService.apply(detection);
+
+      res.json({
+        success: true,
+        dryRun,
+        data: {
+          wordpress: detection.wordpress.length,
+          rss: detection.rss.length,
+          changed: detection.changed.length,
+          total: detection.total,
+          applied,
+          sources: {
+            wordpress: detection.wordpress.map((s) => ({
+              slug: s.slug,
+              wpApiUrl: s.wpApiUrl,
+              sampleWords: s.sampleWords,
+              previous: s.previous,
+            })),
+            rss: detection.rss.map((s) => ({
+              slug: s.slug,
+              reason: s.reason,
+              previous: s.previous,
+            })),
+          },
+        },
+      });
+    } catch (error) {
+      next(error);
+    }
+  }
+
   /**
    * POST /api/crawler/trigger
    * Trigger an immediate crawl cycle

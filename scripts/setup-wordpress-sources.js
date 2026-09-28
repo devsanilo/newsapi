@@ -4,15 +4,19 @@
  * Probes `<site>/wp-json/wp/v2/posts` for every active source and records the
  * result on the source row:
  *
- *   feed_type  'wordpress' → ingest the complete post via the REST API; the row
+ *   feed_type  'wordpress' → ingest the complete post via the REST API. The row
  *                            is held unpublished until the rewrite pipeline
  *                            turns it into a Trenxi article.
  *   feed_type  'rss'       → headline highlight. Published immediately, links
  *                            out to the publisher, never rewritten.
  *
  * Detection is a probe rather than a hardcoded list because the answer is a
- * property of the publisher's stack, not of the codebase — and it changes when
- * a site is rebuilt, moves off WordPress, or starts blocking the REST API.
+ * property of the publisher's stack, not of this codebase — it changes when a
+ * site is rebuilt, moves off WordPress, or starts blocking the REST API.
+ *
+ * The same code is exposed as POST /api/crawler/detect-wordpress for running
+ * against an environment with no shell access (production), so the two paths
+ * cannot drift apart.
  *
  *   node scripts/setup-wordpress-sources.js            # dry run
  *   node scripts/setup-wordpress-sources.js --apply    # write the result
@@ -22,8 +26,7 @@
 require("dotenv").config();
 
 const { sequelize } = require("../src/database/connection");
-const Source = require("../src/models/Source");
-const wpCrawler = require("../src/crawlers/wpCrawler");
+const sourceDetectionService = require("../src/services/sourceDetectionService");
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
@@ -39,47 +42,27 @@ const ONLY =
 (async () => {
   await sequelize.authenticate();
 
-  const sources = await Source.findAll({
-    where: { is_active: true },
-    order: [["is_local", "DESC"], ["slug", "ASC"]],
-    raw: true,
-  });
-
-  const targets = ONLY ? sources.filter((s) => ONLY.includes(s.slug)) : sources;
-
   console.log(
-    `${APPLY ? "APPLYING" : "DRY RUN"} — probing ${targets.length} active source(s) for a WordPress REST API\n`,
+    `${APPLY ? "APPLYING" : "DRY RUN"} — probing active source(s) for a WordPress REST API${ONLY ? ` (${ONLY.join(", ")})` : ""}\n`,
   );
 
-  const willBeWordPress = [];
-  const willBeRss = [];
+  const detection = await sourceDetectionService.detect({ only: ONLY });
 
-  for (const source of targets) {
-    const before = source.feed_type;
-    const result = await wpCrawler.detect(source.url);
-
-    if (result.supported) {
-      willBeWordPress.push({ slug: source.slug, before, wpApiUrl: result.wpApiUrl });
-      console.log(
-        `  WP   ${String(source.slug).padEnd(18)} ${String(source.is_local ? "local" : "intl").padEnd(6)} ${result.sample?.words ?? "?"}w sample`,
-      );
-    } else {
-      willBeRss.push({ slug: source.slug, before, reason: result.reason });
-      console.log(
-        `  --   ${String(source.slug).padEnd(18)} ${String(source.is_local ? "local" : "intl").padEnd(6)} ${String(result.reason).slice(0, 70)}`,
-      );
-    }
+  for (const s of detection.wordpress) {
+    const note =
+      s.previous === "wordpress" ? "already set" : `was '${s.previous}' → wordpress`;
+    console.log(`  WP   ${String(s.slug).padEnd(18)} ${String(s.sampleWords ?? "?").padStart(5)}w sample   ${note}`);
+  }
+  for (const s of detection.rss) {
+    const note =
+      s.previous === "wordpress" ? `was 'wordpress' → rss (${s.reason})` : String(s.reason).slice(0, 50);
+    console.log(`  --   ${String(s.slug).padEnd(18)} ${"".padStart(5)}           ${note}`);
   }
 
   console.log(`\n=== summary ===`);
-  console.log(`  WordPress (full articles, rewritten): ${willBeWordPress.length}`);
-  console.log(`  RSS (highlights, no article page):     ${willBeRss.length}`);
-
-  const changed = [...willBeWordPress, ...willBeRss].filter((s) => {
-    const target = willBeWordPress.some((w) => w.slug === s.slug) ? "wordpress" : "rss";
-    return s.before !== target;
-  });
-  console.log(`  rows needing a change:                 ${changed.length}`);
+  console.log(`  WordPress (full articles, rewritten): ${detection.wordpress.length}`);
+  console.log(`  RSS (highlights, no article page):     ${detection.rss.length}`);
+  console.log(`  rows needing a change:                 ${detection.changed.length}`);
 
   if (!APPLY) {
     console.log(`\nDry run — nothing written. Re-run with --apply to persist.`);
@@ -87,22 +70,11 @@ const ONLY =
     return;
   }
 
-  for (const item of willBeWordPress) {
-    await Source.update(
-      { feed_type: "wordpress", wp_api_url: item.wpApiUrl },
-      { where: { slug: item.slug } },
-    );
-  }
-  for (const item of willBeRss) {
-    // wp_api_url is cleared as well: a stale URL would be used in preference to
-    // re-deriving one, and would silently point at an API that no longer works.
-    await Source.update(
-      { feed_type: "rss", wp_api_url: null },
-      { where: { slug: item.slug } },
-    );
-  }
+  const applied = await sourceDetectionService.apply(detection);
+  console.log(
+    `\nApplied. ${applied.wordpress} WordPress, ${applied.rss} RSS (${applied.changed} changed).`,
+  );
 
-  console.log(`\nApplied. ${willBeWordPress.length} WordPress, ${willBeRss.length} RSS.`);
   await sequelize.close();
   process.exit(0);
 })().catch(async (err) => {
