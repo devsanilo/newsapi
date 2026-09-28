@@ -15,6 +15,7 @@ const { generateHash } = require("../utils/hash");
 const { toCanonicalCategory } = require("../utils/categories");
 const imageService = require("../services/articleImageService");
 const rewriteService = require("../services/rewriteService");
+const corpusService = require("../services/corpusService");
 const {
   getRewriteSettings,
   updateRewriteSettings,
@@ -1555,6 +1556,77 @@ async function runRewriteBatchNow(req, res) {
   }
 }
 
+/**
+ * GET /api/admin/corpus
+ *
+ * Report what the pre-restructure corpus looks like and what a delete would
+ * cascade into. Read-only, so it is safe to call before deciding anything.
+ */
+async function getCorpusStatus(req, res, next) {
+  try {
+    const scope = req.query.scope || "highlights";
+    res.json({ success: true, data: await corpusService.describe(scope) });
+  } catch (err) {
+    logger.error("admin.getCorpusStatus error:", err);
+    res.status(400).json({ success: false, message: err.message });
+  }
+}
+
+/**
+ * POST /api/admin/corpus
+ *
+ * Body: { action, scope?, allowRewritten?, confirm? }
+ *
+ *   action 'archive' — unpublish, reversible
+ *   action 'restore' — undo an archive
+ *   action 'purge'   — hard delete AND every cascaded dependent row
+ *
+ * 'purge' additionally requires confirm: 'DELETE', so it cannot be triggered by
+ * a stray click or a replayed request.
+ */
+async function runCorpusAction(req, res, next) {
+  try {
+    const { action, scope = "highlights", allowRewritten = false, confirm } = req.body || {};
+
+    if (!["archive", "restore", "purge"].includes(action)) {
+      return res.status(400).json({
+        success: false,
+        message: "action must be one of: archive, restore, purge",
+      });
+    }
+
+    if (action === "purge" && confirm !== "DELETE") {
+      // Report the cost rather than just refusing, so the caller can see what
+      // they were about to do without a second round trip.
+      return res.status(409).json({
+        success: false,
+        message: `purge deletes user data too. Send confirm: "DELETE" to proceed.`,
+        data: await corpusService.describe(scope),
+      });
+    }
+
+    const before = await corpusService.describe(scope);
+
+    let result;
+    if (action === "archive") result = await corpusService.archive(scope);
+    else if (action === "restore") result = await corpusService.restore(scope);
+    else result = await corpusService.purge(scope, { allowRewritten });
+
+    if (result.refused) {
+      return res.status(409).json({ success: false, message: result.reason, data: result });
+    }
+
+    logger.warn(
+      `admin: corpus ${action} by ${req.user?.email || req.user?.id || "unknown"} — ${JSON.stringify(result)}`,
+    );
+
+    res.json({ success: true, data: { ...result, before } });
+  } catch (err) {
+    logger.error("admin.runCorpusAction error:", err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1565,6 +1637,8 @@ module.exports = {
   testEmail,
   getArticles,
   getArticleStats,
+  getCorpusStatus,
+  runCorpusAction,
   getRewriteQueue,
   approveRewrite,
   rejectRewrite,

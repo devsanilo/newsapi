@@ -37,6 +37,10 @@ router.get("/articles", adminController.getArticles);
 // Article-volume stats. Registered before "/articles/:id" so the literal path
 // is not swallowed by a parameter match.
 router.get("/articles/stats", adminController.getArticleStats);
+// Corpus maintenance for the pre-restructure articles. GET is read-only; the
+// POST requires confirm: "DELETE" to purge, because it cascades into user data.
+router.get("/corpus", adminController.getCorpusStatus);
+router.post("/corpus", adminController.runCorpusAction);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);
 // Lead-image repair. Registered before the ":id" routes so the literal path is
