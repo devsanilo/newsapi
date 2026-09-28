@@ -396,7 +396,7 @@ function ensureWpIngestSchedule() {
 
     try {
       const result = await runWordPressIngestNow();
-      if (result?.skipped) {
+      if (result?.alreadyRunning) {
         logger.warn("Cron: Previous WordPress ingest still running, skipping tick");
       } else if (result && (result.articles > 0 || result.errors > 0)) {
         logger.info(
@@ -421,11 +421,16 @@ function ensureWpIngestSchedule() {
  * anything else cannot run two passes at once — they would duplicate requests
  * to every publisher for no benefit.
  *
- * Returns `{ skipped: true }` when a pass is already running rather than
- * queueing another.
+ * Returns `{ alreadyRunning: true }` when a pass is already in flight rather
+ * than queueing another.
+ *
+ * The sentinel is NOT called `skipped`, because the ingest result already has a
+ * `skipped` field of its own — the count of posts already known — and a caller
+ * testing `result.skipped` would read a perfectly normal run as "was already
+ * running".
  */
 async function runWordPressIngestNow() {
-  if (runtimeState.is_ingesting_wp) return { skipped: true };
+  if (runtimeState.is_ingesting_wp) return { alreadyRunning: true };
 
   runtimeState.is_ingesting_wp = true;
   try {
