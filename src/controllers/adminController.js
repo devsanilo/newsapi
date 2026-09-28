@@ -992,6 +992,11 @@ async function getArticles(req, res) {
     const offset = (page - 1) * limit;
     const search = (req.query.q || "").trim();
     const type = String(req.query.type || "all").toLowerCase();
+    // Provenance filters, so the WordPress screen can list its own content and
+    // the highlights screen can list its own. Either matches nothing when an
+    // unknown value is passed rather than silently returning everything.
+    const contentType = String(req.query.contentType || "").toLowerCase();
+    const ingestType = String(req.query.ingestType || "").toLowerCase();
 
     const clauses = [];
     const params = { limit, offset };
@@ -1001,12 +1006,22 @@ async function getArticles(req, res) {
     }
     if (type === "original") clauses.push("n.is_original = 1");
     if (type === "aggregated") clauses.push("n.is_original = 0");
+    if (contentType) {
+      clauses.push("n.content_type = :contentType");
+      params.contentType = contentType;
+    }
+    if (ingestType) {
+      clauses.push("n.ingest_type = :ingestType");
+      params.ingestType = ingestType;
+    }
     const where = clauses.length ? clauses.join(" AND ") : "1=1";
 
     const [rows] = await sequelize.query(
       `SELECT n.id, n.title, n.source, n.category, n.published_at,
               n.image_url, n.url,
               n.is_original, n.is_published, n.author_id, n.updated_at,
+              n.content_type, n.ingest_type, n.rewrite_status, n.rewrite_attempts,
+              CHAR_LENGTH(COALESCE(n.content,'')) AS content_chars,
               u.name AS author_name,
               COALESCE(i.cnt,0) AS impressions_count,
               COALESCE(r.cnt,0) AS reactions_count,
@@ -1627,6 +1642,96 @@ async function runCorpusAction(req, res, next) {
   }
 }
 
+/**
+ * GET /api/admin/wordpress
+ *
+ * What the WordPress side of the house looks like: how much is waiting on a
+ * decision, how much was rewritten, how much was published verbatim.
+ */
+async function getWordPressSummary(req, res, next) {
+  try {
+    const stats = await rewriteService.getWordPressStats();
+    const [[counts]] = await sequelize.query(`
+      SELECT
+        SUM(ingest_type = 'wordpress' AND content_type = 'aggregated' AND is_published = 0) AS awaiting,
+        SUM(ingest_type = 'rss')                                                         AS highlights
+      FROM news
+    `);
+    res.json({
+      success: true,
+      data: {
+        ...stats,
+        awaiting: Number(counts?.awaiting || 0),
+        highlights: Number(counts?.highlights || 0),
+      },
+    });
+  } catch (err) {
+    logger.error("admin.getWordPressSummary error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/** Why publishing as-is was refused, in words an operator can act on. */
+function publishAsIsMessage(reason) {
+  switch (reason) {
+    case "not_found":
+      return "Article not found.";
+    case "not_wordpress":
+      return "Only WordPress content can be published as-is. RSS rows are highlights and always link out to the publisher.";
+    case "already_published":
+      return "This article is already published (rewritten or syndicated).";
+    case "no_content":
+      return "This row has no body text, so there is nothing to publish.";
+    default:
+      return `Could not publish: ${reason}`;
+  }
+}
+
+/** POST /api/admin/wordpress/:id/publish-as-is */
+async function publishAsIsHandler(req, res, next) {
+  try {
+    const result = await rewriteService.publishAsIs(req.params.id, {
+      publishedBy: req.user?.email || req.user?.id || null,
+    });
+    if (!result.ok) {
+      return res.status(result.reason === "not_found" ? 404 : 409).json({
+        success: false,
+        message: publishAsIsMessage(result.reason),
+        reason: result.reason,
+      });
+    }
+    res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error("admin.publishAsIsHandler error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/**
+ * POST /api/admin/wordpress/publish-as-is
+ *
+ * Body: { limit }
+ *
+ * Bounded, because this releases the publisher's text verbatim and the whole
+ * backlog should never go out on one call.
+ */
+async function publishManyAsIsHandler(req, res, next) {
+  try {
+    const limit = parseInt(req.body?.limit, 10) || 20;
+    const result = await rewriteService.publishManyAsIs({
+      limit,
+      publishedBy: req.user?.email || req.user?.id || null,
+    });
+    logger.warn(
+      `admin: published ${result.published} WordPress article(s) as-is (limit ${result.limit})`,
+    );
+    res.json({ success: true, data: result });
+  } catch (err) {
+    logger.error("admin.publishManyAsIsHandler error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1639,6 +1744,9 @@ module.exports = {
   getArticleStats,
   getCorpusStatus,
   runCorpusAction,
+  getWordPressSummary,
+  publishAsIsHandler,
+  publishManyAsIsHandler,
   getRewriteQueue,
   approveRewrite,
   rejectRewrite,

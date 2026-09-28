@@ -9,7 +9,7 @@ const logger = require("../utils/logger");
 const { decodeEntities } = require("../utils/cleaner");
 // The article/highlights split lives in one shared module; see that file for
 // why it keys off content_type rather than ingest_type.
-const { ARTICLE_CONTENT_TYPES, feedWhere } = require("../utils/feedScope");
+const { ARTICLE_CONTENT_TYPES, ARTICLE_SCOPE_SQL, feedWhere } = require("../utils/feedScope");
 
 class NewsService {
   /**
@@ -360,7 +360,7 @@ class NewsService {
          GROUP BY news_id
        ) i ON i.news_id = n.id
        WHERE n.is_published = 1
-         AND n.content_type IN ('rewritten','original')
+         AND n.${ARTICLE_SCOPE_SQL}
        ORDER BY n.published_at DESC, impressions_score DESC
        LIMIT :limit`,      { replacements: { limit: recentLimit } },
     );

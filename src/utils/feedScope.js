@@ -27,7 +27,7 @@
 
 const { Op } = require("sequelize");
 
-const ARTICLE_CONTENT_TYPES = ["rewritten", "original"];
+const ARTICLE_CONTENT_TYPES = ["rewritten", "original", "syndicated"];
 const HIGHLIGHT_CONTENT_TYPE = "aggregated";
 
 /** Sequelize where-fragment for the article feed. */
@@ -49,7 +49,7 @@ function feedWhere(feed) {
 }
 
 /** SQL equivalent, for the queries written by hand in raw MySQL. */
-const ARTICLE_SCOPE_SQL = "content_type IN ('rewritten','original')";
+const ARTICLE_SCOPE_SQL = "content_type IN ('rewritten','original','syndicated')";
 
 module.exports = {
   ARTICLE_CONTENT_TYPES,

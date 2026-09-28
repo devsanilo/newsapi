@@ -6,6 +6,9 @@ const { DataTypes, Model } = require("sequelize");
 const { sequelize } = require("../database/connection");
 const { generateHash } = require("../utils/hash");
 const { toCanonicalCategory } = require("../utils/categories");
+// The article/highlights split, so the raw SQL here cannot drift from the
+// Sequelize queries in the services.
+const { ARTICLE_SCOPE_SQL } = require("../utils/feedScope");
 
 class News extends Model {
   /**
@@ -100,13 +103,13 @@ class News extends Model {
          SELECT category, COUNT(*) AS article_count
          FROM news
          WHERE is_published = 1
-           AND content_type IN ('rewritten','original')
+           AND ${ARTICLE_SCOPE_SQL}
            AND COALESCE(published_at, created_at) >= :cutoff
            AND category IS NOT NULL
          GROUP BY category
        ) cat_counts ON n.category = cat_counts.category
        WHERE n.is_published = 1
-         AND n.content_type IN ('rewritten','original')
+         AND n.${ARTICLE_SCOPE_SQL}
          AND COALESCE(n.published_at, n.created_at) >= :cutoff
        ORDER BY cat_counts.article_count DESC, COALESCE(n.published_at, n.created_at) DESC
        LIMIT :limit`,
@@ -224,12 +227,20 @@ News.init(
     // from `is_original`: an AI rewrite of syndicated copy is a derivative, so
     // it must not claim to be first-party. Conflating the two would destroy the
     // only signal that distinguishes Trenxi-authored pages.
+    //
+    //   aggregated — an RSS/crawled row: headline, standfirst, image, link out.
+    //                Never rewritten, never given an article page.
+    //   rewritten  — our own prose derived from a publisher's full post.
+    //   original   — first-party Trenxi reporting.
+    //   syndicated — a WordPress post published VERBATIM, with a page. Kept
+    //                separate from 'aggregated' precisely because it has a page
+    //                and belongs in the article feed.
     content_type: {
-      type: DataTypes.ENUM("aggregated", "rewritten", "original"),
+      type: DataTypes.ENUM("aggregated", "rewritten", "original", "syndicated"),
       allowNull: false,
       defaultValue: "aggregated",
       comment:
-        "Provenance of the live content: third-party feed, AI rewrite, or first-party",
+        "Provenance of the live content: third-party feed, AI rewrite, first-party, or verbatim syndication",
     },
     // How the row got here, fixed at insert and never changed.
     //
@@ -253,10 +264,14 @@ News.init(
         "ready",
         "applied",
         "failed",
+        // Published as-is. The claim query takes only ('none','failed'), so this
+        // takes a row out of the rewrite queue for good without pretending a
+        // rewrite happened ('applied') or that it failed ('failed').
+        "skipped",
       ),
       allowNull: false,
       defaultValue: "none",
-      comment: "State of the AI rewrite for this row",
+      comment: "State of the AI rewrite for this row; skipped = published as-is",
     },
     // Generated output is parked here and is NEVER served to readers until an
     // admin approves it. This is what stops one bad model day from rewriting

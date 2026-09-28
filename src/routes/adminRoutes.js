@@ -41,6 +41,13 @@ router.get("/articles/stats", adminController.getArticleStats);
 // POST requires confirm: "DELETE" to purge, because it cascades into user data.
 router.get("/corpus", adminController.getCorpusStatus);
 router.post("/corpus", adminController.runCorpusAction);
+
+// WordPress content: the publisher's own posts, which can either be rewritten
+// into Trenxi articles or published verbatim. Kept apart from the RSS screens
+// because the two corpora behave differently in every respect.
+router.get("/wordpress", adminController.getWordPressSummary);
+router.post("/wordpress/publish-as-is", adminController.publishManyAsIsHandler);
+router.post("/wordpress/:id/publish-as-is", adminController.publishAsIsHandler);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);
 // Lead-image repair. Registered before the ":id" routes so the literal path is

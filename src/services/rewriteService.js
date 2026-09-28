@@ -816,9 +816,119 @@ async function discardStaged(id, { reason = "Rejected by reviewer" } = {}) {
   return { ok: true, id };
 }
 
-/** Queue depth, for the admin page and the scheduler's logging. */
-async function getQueueStats() {
+/**
+ * Publish a WordPress post exactly as the publisher wrote it.
+ *
+ * The alternative to rewriting: the row already holds the complete post, so it
+ * only has to be released. It becomes `content_type='syndicated'` — a distinct
+ * value because it is neither our writing nor a bare highlight, and unlike an
+ * 'aggregated' row it DOES get an article page and belongs in the article feed.
+ *
+ * Deliberately refused for anything that is not a WordPress row. An RSS row is
+ * a headline with a ~2000-character summary scraped from the feed; publishing
+ * it as an article would put a stub on a page of its own, which is the opposite
+ * of Google-News-style highlighting.
+ *
+ * `rewrite_status='skipped'` takes it out of the claim query (which takes only
+ * 'none' and 'failed') permanently, without pretending a rewrite was applied.
+ */
+async function publishAsIs(id, { publishedBy = null } = {}) {
+  const row = await News.findByPk(id);
+  if (!row) return { ok: false, reason: "not_found" };
+
+  if (row.ingest_type !== "wordpress") {
+    return { ok: false, reason: "not_wordpress" };
+  }
+  if (row.content_type === "syndicated" || row.content_type === "rewritten") {
+    return { ok: false, reason: "already_published" };
+  }
+  // Nothing to publish: the ingest pass skips posts below the minimum length,
+  // so an empty body means something went wrong rather than being brief.
+  if (!String(row.content || "").trim()) {
+    return { ok: false, reason: "no_content" };
+  }
+
+  const meta = { ...(row.rewrite_meta || {}) };
+  meta.published_as_is_at = new Date().toISOString();
+  meta.published_as_is_by = publishedBy;
+
+  await row.update({
+    content_type: "syndicated",
+    rewrite_status: "skipped",
+    is_published: true,
+    // A staged rewrite makes no sense on a row published verbatim.
+    staged_title: null,
+    staged_description: null,
+    staged_content: null,
+    staged_at: null,
+    rewrite_meta: meta,
+    rewrite_error: null,
+    updated_at: new Date(),
+  });
+
+  return { ok: true, id };
+}
+
+/**
+ * Publish a batch of WordPress posts as-is.
+ *
+ * Bounded on purpose: this releases publisher text verbatim, and running it
+ * over the whole backlog in one call is not something that should be possible
+ * by accident.
+ */
+async function publishManyAsIs({ limit = 20, publishedBy = null } = {}) {
+  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 200));
+
+  const rows = await News.findAll({
+    where: {
+      ingest_type: "wordpress",
+      content_type: "aggregated",
+      is_published: false,
+    },
+    order: [
+      ["published_at", "DESC"],
+      ["created_at", "DESC"],
+    ],
+    limit: safeLimit,
+    raw: true,
+  });
+
+  let published = 0;
+  const skipped = [];
+
+  for (const row of rows) {
+    const result = await publishAsIs(row.id, { publishedBy });
+    if (result.ok) published += 1;
+    else skipped.push({ id: row.id, reason: result.reason });
+  }
+
+  return { published, scanned: rows.length, skipped, limit: safeLimit };
+}
+
+/** Rows published verbatim, and rows still waiting on a decision. */
+async function getWordPressStats() {
   const [[row]] = await sequelize.query(`
+    SELECT
+      SUM(ingest_type = 'wordpress' AND is_published = 0)                        AS awaiting,
+      SUM(content_type = 'syndicated')                                           AS syndicated,
+      SUM(content_type = 'rewritten')                                            AS rewritten,
+      SUM(ingest_type = 'wordpress' AND rewrite_status = 'skipped')              AS skipped,
+      SUM(ingest_type = 'wordpress' AND rewrite_status = 'failed'
+          AND rewrite_attempts >= ${MAX_ATTEMPTS})                               AS exhausted
+    FROM news
+  `);
+  const num = (v) => Number(v || 0);
+  return {
+    awaiting: num(row?.awaiting),
+    syndicated: num(row?.syndicated),
+    rewritten: num(row?.rewritten),
+    skipped: num(row?.skipped),
+    exhausted: num(row?.exhausted),
+  };
+}
+
+/** Queue depth, for the admin page and the scheduler's logging. */
+async function getQueueStats() {  const [[row]] = await sequelize.query(`
     SELECT
       SUM(ingest_type = 'wordpress' AND rewrite_status IN ('none','failed') AND rewrite_attempts < ${MAX_ATTEMPTS}) AS pending,
       SUM(rewrite_status = 'processing') AS processing,
@@ -853,6 +963,9 @@ module.exports = {
   overlapReport,
   stripQuoted,
   applyStaged,
+  publishAsIs,
+  publishManyAsIs,
+  getWordPressStats,
   discardStaged,
   markFailed,
   release,
