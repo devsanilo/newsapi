@@ -8,6 +8,33 @@ const logger = require("../utils/logger");
 
 async function getNews(req, res, next) {
   try {
+    const { page, limit, category, source, language, feed } = req.query;
+    const result = await newsService.getNews({
+      page,
+      limit,
+      category,
+      source,
+      language,
+      // Anything other than 'highlights' resolves to the articles feed, so an
+      // unexpected value can never leak the wrong corpus.
+      feed,
+    });
+    result.data = await enrichArticles(result.data, req.user?.id);
+    res.json({ success: true, ...result });
+  } catch (error) {
+    next(error);
+  }
+}
+
+/**
+ * The Highlights feed: raw RSS rows.
+ *
+ * Same shape as the main feed, but the items are other publishers' headlines
+ * with a standfirst and an image rather than articles we own, which is why the
+ * clients send these to the publisher instead of opening an article page.
+ */
+async function getHighlights(req, res, next) {
+  try {
     const { page, limit, category, source, language } = req.query;
     const result = await newsService.getNews({
       page,
@@ -15,6 +42,7 @@ async function getNews(req, res, next) {
       category,
       source,
       language,
+      feed: "highlights",
     });
     result.data = await enrichArticles(result.data, req.user?.id);
     res.json({ success: true, ...result });
@@ -151,6 +179,7 @@ async function getNewsById(req, res, next) {
 
 module.exports = {
   getNews,
+  getHighlights,
   searchNews,
   getSearchSuggestions,
   searchByKeyword,

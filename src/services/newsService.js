@@ -8,6 +8,34 @@ const News = require("../models/News");
 const logger = require("../utils/logger");
 const { decodeEntities } = require("../utils/cleaner");
 
+/**
+ * Which corpus a feed shows.
+ *
+ * The app has two feeds and they must not mix: the main feed shows articles we
+ * actually own, and Highlights shows the raw RSS items.
+ *
+ * This splits on `content_type`, NOT `ingest_type`, and that distinction is not
+ * cosmetic: `ingest_type` records where a row CAME from, and every article that
+ * was rewritten before the WordPress change came from RSS. Filtering the main
+ * feed on ingest_type='wordpress' would therefore hide all of them — including
+ * every published article in the corpus.
+ *
+ *   articles   → rewrites and first-party originals. Has a body worth reading.
+ *   highlights → raw RSS rows: a headline, a standfirst and an image, which is
+ *                why they link out instead of opening an in-app page.
+ *
+ * WordPress rows waiting to be rewritten are `content_type='aggregated'` and
+ * unpublished, so they appear in neither feed.
+ */
+const ARTICLE_CONTENT_TYPES = ["rewritten", "original"];
+
+function feedWhere(feed) {
+  if (feed === "highlights") {
+    return { ingest_type: "rss", content_type: "aggregated" };
+  }
+  return { content_type: { [Op.in]: ARTICLE_CONTENT_TYPES } };
+}
+
 class NewsService {
   /**
    * Store articles in the database, skipping duplicates
@@ -97,10 +125,10 @@ class NewsService {
 
   /**
    * Get paginated news articles with optional filters
-   * @param {Object} options - { page, limit, category, source, language }
+   * @param {Object} options - { page, limit, category, source, language, feed }
    * @returns {Object} - { data, pagination }
    */
-  async getNews({ page = 1, limit = 20, category, source, language } = {}) {
+  async getNews({ page = 1, limit = 20, category, source, language, feed } = {}) {
     const maxLimit = parseInt(process.env.MAX_PAGE_SIZE, 10) || 100;
     limit = Math.min(parseInt(limit, 10) || 20, maxLimit);
     page = Math.max(parseInt(page, 10) || 1, 1);
@@ -110,6 +138,9 @@ class NewsService {
 
     // Public feed must never include drafts.
     where.is_published = true;
+
+    // Articles we own by default; 'highlights' switches to the raw RSS feed.
+    Object.assign(where, feedWhere(feed));
 
     if (category) {
       where.category = category.toLowerCase();
@@ -354,6 +385,7 @@ class NewsService {
          GROUP BY news_id
        ) i ON i.news_id = n.id
        WHERE n.is_published = 1
+         AND n.content_type IN ('rewritten','original')
        ORDER BY n.published_at DESC, impressions_score DESC
        LIMIT :limit`,
       { replacements: { limit: recentLimit } },

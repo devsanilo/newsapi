@@ -100,11 +100,13 @@ class News extends Model {
          SELECT category, COUNT(*) AS article_count
          FROM news
          WHERE is_published = 1
+           AND content_type IN ('rewritten','original')
            AND COALESCE(published_at, created_at) >= :cutoff
            AND category IS NOT NULL
          GROUP BY category
        ) cat_counts ON n.category = cat_counts.category
        WHERE n.is_published = 1
+         AND n.content_type IN ('rewritten','original')
          AND COALESCE(n.published_at, n.created_at) >= :cutoff
        ORDER BY cat_counts.article_count DESC, COALESCE(n.published_at, n.created_at) DESC
        LIMIT :limit`,
