@@ -76,6 +76,10 @@ const MAX_TOTAL_SHARED_RUN = Number(process.env.REWRITE_MAX_QUOTE_RUN || 80);
 // failures). Below this cap the floor is 85% of the source, never under 120.
 const MIN_WORDS_SOURCE_FACTOR = Number(process.env.REWRITE_MIN_WORDS_FACTOR || 0.85);
 const MIN_WORDS_FLOOR = Number(process.env.REWRITE_MIN_WORDS_FLOOR || 120);
+
+// Below this the source text cannot support an honest rewrite. Applies both to
+// scraped text and to the post body we already hold for WordPress rows.
+const MIN_SOURCE_WORDS = Number(process.env.REWRITE_MIN_SOURCE_WORDS || 120);
 const SOURCE_CHAR_LIMIT = Number(process.env.REWRITE_SOURCE_CHARS || 8000);
 
 const SYSTEM_PROMPT = `You are a careful news desk editor for Trenxi, a Nigerian news publication.
@@ -418,9 +422,9 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
   // Whitelisted ordering — never interpolate the caller's string.
   const orderBy = order === "oldest" ? "created_at ASC" : "created_at DESC";
 
-  // Publishers that cannot be scraped (paywalls, bot walls) waste an attempt on
-  // every row and crowd out sources that work. Skipping them is cheaper than
-  // retrying each one three times.
+  // A publisher whose posts never produce a usable rewrite still burns an
+  // attempt on every row and crowds out sources that do work, so it is cheaper
+  // to skip the source outright than to retry each of its articles three times.
   const skipSources = String(process.env.REWRITE_SKIP_SOURCES || "")
     .split(",")
     .map((s) => s.trim())
@@ -444,10 +448,16 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
       );
     }
 
+    // Only WordPress rows are claimed. An RSS row is a headline highlight: it
+    // links out to the publisher and must never acquire a Trenxi article page,
+    // so it is excluded here rather than being filtered later.
+    //
+    // `content` is selected because a WordPress row already holds the complete
+    // post — see fetchSourceText.
     const [rows] = await sequelize.query(
-      `SELECT id, url, source, title, description
+      `SELECT id, url, source, title, description, content, ingest_type
          FROM news
-        WHERE content_type = 'aggregated'
+        WHERE ingest_type = 'wordpress'
           AND rewrite_status IN ('none', 'failed')
           AND rewrite_attempts < :maxAttempts
           AND url IS NOT NULL
@@ -480,18 +490,37 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
 }
 
 /**
- * Fetch the source page text for a row.
+ * Fetch the source text to rewrite from.
+ *
+ * WordPress rows already hold the complete post: the REST API supplied it at
+ * ingest. Using it directly removes the article-page scrape from the path
+ * entirely, and that scrape was the reason rewrites kept coming out thin — RSS
+ * only ever carried a summary, so the full text had to be recovered from the
+ * publisher's page and frequently came back empty or truncated.
+ *
+ * Scraping remains the fallback for any row without usable stored content
+ * (a non-WordPress row, or a post whose body was too short to be worth storing),
+ * so nothing that used to work stops working.
  *
  * `htmlScraper` is required lazily: it pulls in puppeteer, and a missing or
  * broken Chromium install would otherwise take down every consumer of this
  * module — including the admin endpoints that never scrape anything.
  *
- * Returns null when the page genuinely has nothing to read. Throws with
+ * Returns null when the source genuinely has nothing to read. Throws with
  * `scraperUnavailable` when the scraper itself could not be loaded, because
  * that is an environment fault rather than a property of this article, and the
  * caller must not mark the row permanently un-rewritable over it.
  */
 async function fetchSourceText(row) {
+  const stored = String(row.content || "").trim();
+  if (row.ingest_type === "wordpress" && wordCount(stored) >= MIN_SOURCE_WORDS) {
+    return {
+      title: row.title,
+      description: row.description || "",
+      text: stored.slice(0, SOURCE_CHAR_LIMIT),
+    };
+  }
+
   let htmlScraper;
   try {
     htmlScraper = require("../crawlers/htmlScraper");
@@ -577,7 +606,7 @@ async function rewriteRow(row, deps = {}) {
 
   try {
     const source = await scrape(row);
-    if (!source || wordCount(source.text) < 120) {
+    if (!source || wordCount(source.text) < MIN_SOURCE_WORDS) {
       // Not enough source material to write anything honest from. Marking it
       // failed (rather than retrying) avoids paying for the same dead page
       // three times.
@@ -749,6 +778,11 @@ async function applyStaged(id, { appliedBy = null } = {}) {
     hash: generateHash(title, row.source, row.published_at || row.created_at),
     content_type: "rewritten",
     rewrite_status: "applied",
+    // Applying the rewrite is the publish step. WordPress rows are ingested
+    // unpublished so the publisher's own text is never served to readers; this
+    // is what puts the finished Trenxi article live. It covers both paths —
+    // auto-publish, and an admin approving a staged rewrite.
+    is_published: true,
     staged_title: null,
     staged_description: null,
     staged_content: null,
@@ -786,11 +820,13 @@ async function discardStaged(id, { reason = "Rejected by reviewer" } = {}) {
 async function getQueueStats() {
   const [[row]] = await sequelize.query(`
     SELECT
-      SUM(content_type = 'aggregated' AND rewrite_status IN ('none','failed') AND rewrite_attempts < ${MAX_ATTEMPTS}) AS pending,
+      SUM(ingest_type = 'wordpress' AND rewrite_status IN ('none','failed') AND rewrite_attempts < ${MAX_ATTEMPTS}) AS pending,
       SUM(rewrite_status = 'processing') AS processing,
       SUM(rewrite_status = 'ready')      AS ready,
       SUM(content_type = 'rewritten')    AS applied,
       SUM(content_type = 'original')     AS originals,
+      SUM(ingest_type = 'wordpress')     AS wordpress_total,
+      SUM(ingest_type = 'rss')           AS highlights,
       SUM(rewrite_status = 'failed' AND rewrite_attempts >= ${MAX_ATTEMPTS}) AS exhausted
     FROM news
   `);
@@ -801,6 +837,8 @@ async function getQueueStats() {
     ready: num(row?.ready),
     applied: num(row?.applied),
     originals: num(row?.originals),
+    wordpressTotal: num(row?.wordpress_total),
+    highlights: num(row?.highlights),
     exhausted: num(row?.exhausted),
     maxAttempts: MAX_ATTEMPTS,
   };

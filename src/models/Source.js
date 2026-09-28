@@ -56,6 +56,24 @@ Source.init(
       allowNull: true,
       comment: 'RSS feed URL',
     },
+    // How this publisher is read.
+    //   'rss'       - headline highlights only: published immediately, links out
+    //                 to the publisher, never rewritten, no Trenxi article page.
+    //   'wordpress' - the WordPress REST API returns the complete post, so the
+    //                 row is ingested in full and becomes the rewrite pipeline's
+    //                 source text. That removes the article-page scrape, which
+    //                 was the main reason rewrites came out thin.
+    feed_type: {
+      type: DataTypes.ENUM('rss', 'wordpress'),
+      allowNull: false,
+      defaultValue: 'rss',
+      comment: 'rss = highlights only; wordpress = full posts via REST',
+    },
+    wp_api_url: {
+      type: DataTypes.STRING(500),
+      allowNull: true,
+      comment: 'WordPress REST base, e.g. https://site/wp-json/wp/v2',
+    },
     scraper_config: {
       type: DataTypes.JSON,
       allowNull: true,
@@ -91,6 +109,7 @@ Source.init(
       { name: 'idx_sources_country', fields: ['country'] },
       { name: 'idx_sources_is_active', fields: ['is_active'] },
       { name: 'idx_sources_is_local', fields: ['is_local'] },
+      { name: 'idx_sources_feed_type', fields: ['feed_type'] },
     ],
   }
 );

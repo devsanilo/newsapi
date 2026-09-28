@@ -288,6 +288,101 @@ function detectLanguage(text) {
   return 'en';
 }
 
+/**
+ * Convert article HTML into plain text that KEEPS its paragraph structure.
+ *
+ * `stripHtml` must NOT be used for article bodies: it collapses every run of
+ * whitespace to a single space (`\s+` -> ' '), which flattens a 2,000-word
+ * WordPress post into one unbroken block. The rewrite model is then given text
+ * with no paragraph structure at all, and the reader gets a wall of text.
+ *
+ * Block-level closing tags become blank lines BEFORE any tag is stripped, so
+ * paragraph boundaries survive as "\n\n" — the same convention the front ends
+ * use to split content into paragraphs.
+ *
+ * Empty markup is removed outright rather than left to become stray text:
+ * `<figure>` blocks (images and their captions), scripts, styles and comments
+ * are dropped whole, and WordPress' "[...]" read-more markers are stripped.
+ *
+ * @param {string} html - Raw HTML from the publisher
+ * @param {number} maxLength - Maximum characters to keep
+ * @returns {string} - Plain text with blank-line paragraph breaks
+ */
+function htmlToParagraphText(html, maxLength = 20000) {
+  if (!html) return '';
+
+  let text = String(html);
+
+  // Drop elements whose content is never article prose. The `[\s\S]*?` form is
+  // used rather than a backreference so nested/imbalanced cases cannot escape.
+  text = text.replace(/<!--[\s\S]*?-->/g, ' ');
+  text = text.replace(
+    /<(script|style|noscript|iframe|object|embed|form|figure|svg|video|audio)[\s\S]*?<\/\1>/gi,
+    ' ',
+  );
+
+  // Paragraph and line boundaries, recorded while the tags are still there.
+  text = text.replace(/<\s*br\s*\/?\s*>/gi, '\n');
+  text = text.replace(/<\s*\/\s*(p|div|section|article|li|ul|ol|h[1-6]|blockquote|tr|td|th|header|footer|aside|main|pre)\s*>/gi, '\n\n');
+
+  // Everything still tagged is inline emphasis, links or images; drop the tags.
+  text = text.replace(/<[^>]+>/g, '');
+
+  text = decodeEntities(text);
+
+  text = text
+    .replace(/[\u00A0\u2007\u202F]/g, ' ')
+    // WordPress read-more markers and stray bracketed placeholders.
+    .replace(/\[\s*(?:&hellip;|\.\.\.|…)\s*\]/g, '')
+    .replace(/\[\s*\]/g, '')
+    .replace(/Advertisement\s*/gi, '')
+    .replace(/Share this (?:article|story)\s*/gi, '')
+    .replace(/^\s*Subscribe\s+.*$/gim, '')
+    .replace(/^\s*(?:Read|See|Learn) more\s*:?\s*$/gim, '')
+    .replace(/^\(.*?photo.*?\)\s*$/gim, '');
+
+  // Tidy per line, then collapse the blank-line runs that doubled tags create.
+  text = text
+    .split('\n')
+    .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+    .join('\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .replace(/^\n+/, '')
+    .trim();
+
+  // Trailing publisher boilerplate.
+  //
+  // stripFeedBoilerplate() is NOT called here. It finishes with
+  // `\s{2,} -> ' '`, which is right for a one-line RSS summary but turns every
+  // "\n\n" paragraph break into a space — it collapsed a 2,023-word article
+  // into a single paragraph. The same trailing rules are applied inline, with
+  // the blank-line runs tidied afterwards instead of flattened.
+  text = text
+    .replace(/\s*the post .*?appeared first on .*?\.?\s*$/i, '')
+    .replace(
+      /\s*\b(?:read|see|learn|continue reading)\s*(?:more)?\s*:?\s*(?:at\s+)?https?:\/\/\S*\s*$/i,
+      '',
+    )
+    .replace(/\s*\b(?:read|see|learn)\s+more\s*:?\s*$/i, '')
+    .replace(/\s*\bcontinue reading\b.*$/i, '')
+    .replace(/\s*\bsource\s*:\s*https?:\/\/\S*\s*$/i, '')
+    .replace(/\s*https?:\/\/\S*\s*$/i, '')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  if (maxLength && text.length > maxLength) {
+    text = text.substring(0, maxLength).trim();
+    // Prefer cutting at a sentence end so the source does not stop mid-thought.
+    const lastStop = Math.max(
+      text.lastIndexOf('. '),
+      text.lastIndexOf('\n\n'),
+    );
+    text = lastStop > maxLength * 0.8 ? text.substring(0, lastStop + 1) : text + '...';
+  }
+
+  return text.trim();
+}
+
 module.exports = {
   stripHtml,
   cleanTitle,
@@ -296,6 +391,7 @@ module.exports = {
   stripFeedBoilerplate,
   cleanContent,
   cleanDescription,
+  htmlToParagraphText,
   extractTags,
   detectLanguage,
 };

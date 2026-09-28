@@ -229,6 +229,20 @@ News.init(
       comment:
         "Provenance of the live content: third-party feed, AI rewrite, or first-party",
     },
+    // How the row got here, fixed at insert and never changed.
+    //
+    // Deliberately NOT derived from content_type, which changes when a rewrite
+    // is applied ('aggregated' -> 'rewritten'). Rewrite eligibility has to be a
+    // property of where the text CAME from: a WordPress post is rewritable,
+    // an RSS highlight is not. Using content_type for this would break the
+    // moment a rewrite landed, and would leave RSS highlights and WordPress
+    // rows waiting their turn indistinguishable.
+    ingest_type: {
+      type: DataTypes.ENUM("rss", "wordpress"),
+      allowNull: false,
+      defaultValue: "rss",
+      comment: "rss = headline highlight; wordpress = full post, rewritable",
+    },
     rewrite_status: {
       type: DataTypes.ENUM(
         "none",
