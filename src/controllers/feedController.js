@@ -15,6 +15,10 @@ const {
 } = require("../models");
 const logger = require("../utils/logger");
 const { decodeEntities } = require("../utils/cleaner");
+const {
+  articleScopeWhere,
+  ARTICLE_SCOPE_SQL,
+} = require("../utils/feedScope");
 
 // ─── Shared enrichment helper (parallelized) ─────────────────
 async function enrichArticles(articles, userId) {
@@ -243,15 +247,25 @@ async function getForYou(req, res, next) {
       });
     }
 
-    // Build WHERE clause
-    let where = { is_published: true };
+    // Conditions that must hold for EVERY branch below.
+    //
+    // These used to live directly in `where`, which the preference branch then
+    // REPLACED with an OR — silently dropping `is_published` and leaking
+    // drafts. That is considerably worse now: WordPress rows are deliberately
+    // unpublished while they still hold the publisher's own text, so a reader
+    // with category preferences was being served it verbatim.
+    const baseWhere = { is_published: true, ...articleScopeWhere() };
+
+    let where = { ...baseWhere };
     if (topCats.length > 0 || explicitSrcs.length > 0) {
       const conditions = [];
       if (topCats.length > 0)
         conditions.push({ category: { [Op.in]: topCats.slice(0, 10) } });
       if (explicitSrcs.length > 0)
         conditions.push({ source: { [Op.in]: explicitSrcs } });
-      where = { [Op.or]: conditions };
+      // AND the preference OR onto the base conditions rather than replacing
+      // them.
+      where = { [Op.and]: [baseWhere, { [Op.or]: conditions }] };
     }
 
     // Language filter
@@ -515,6 +529,7 @@ async function getRelated(req, res, next) {
        FROM news
        WHERE id != :newsId
          AND is_published = 1
+         AND ${ARTICLE_SCOPE_SQL}
          AND MATCH(title, description) AGAINST(${escaped} IN NATURAL LANGUAGE MODE)
        ORDER BY
          CASE WHEN category = :category THEN 0 ELSE 1 END,
@@ -556,7 +571,13 @@ async function syncNews(req, res, next) {
     }
 
     const articles = await News.findAll({
-      where: { created_at: { [Op.gt]: sinceDate }, is_published: true },
+      where: {
+        created_at: { [Op.gt]: sinceDate },
+        is_published: true,
+        // Offline sync feeds the app's local cache, so it must carry the same
+        // corpus as the feed it replaces.
+        ...articleScopeWhere(),
+      },
       order: [["created_at", "ASC"]],
       limit,
       raw: true,
