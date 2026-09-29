@@ -1830,7 +1830,7 @@ function rewriteOneMessage(reason) {
     case "already_running":
       return "A rewrite is already running. Try again shortly.";
     case "not_claimable":
-      return "This row is not eligible right now — it may already be rewritten, mid-rewrite, published, or not a WordPress post.";
+      return "This row is not eligible right now — it may already be rewritten, mid-rewrite, published, or not a plain aggregated article.";
     default:
       return `Could not start the rewrite: ${reason}`;
   }

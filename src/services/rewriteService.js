@@ -500,20 +500,24 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
 /**
  * Claim exactly one row for an admin-triggered single rewrite.
  *
- * Same eligibility as claimBatch (WordPress, none/failed, under the attempt
- * cap) but targeted by id rather than picking whichever is oldest or most
- * recent — this is what backs the per-row "Rewrite" button, as opposed to
- * the batch queue which chooses for itself.
+ * Targeted by id rather than picking whichever is oldest or most recent — this
+ * is what backs the per-row "Rewrite" button on the Articles screen, as
+ * opposed to the batch queue which chooses for itself.
+ *
+ * Deliberately WIDER than claimBatch: the automated batch only ever claims
+ * WordPress posts (RSS is highlights-only there), but a manual rewrite may
+ * target any aggregated row. For an RSS row the source text is scraped from
+ * the publisher's page instead of coming from stored content.
  *
  * @returns {Promise<Object|null>} the claimed row, or null if it was not
- *   eligible (already mid-rewrite, already published, not WordPress, ...).
+ *   eligible (already mid-rewrite, not aggregated, attempt budget spent, ...).
  */
 async function claimOne(id) {
   const [, result] = await sequelize.query(
     `UPDATE news
         SET rewrite_status = 'processing', updated_at = NOW()
       WHERE id = :id
-        AND ingest_type = 'wordpress'
+        AND content_type = 'aggregated'
         AND rewrite_status IN ('none', 'failed')
         AND rewrite_attempts < :maxAttempts`,
     { replacements: { id, maxAttempts: MAX_ATTEMPTS } },
