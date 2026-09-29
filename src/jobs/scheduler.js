@@ -559,6 +559,27 @@ async function updateSchedulerConfig({
   return getSchedulerState();
 }
 
+/**
+ * Rewrite a single WordPress post on demand — the "Rewrite" button on one
+ * row, as opposed to runRewriteBatch's queue-picks-for-you batch.
+ *
+ * Shares the batch's running flag rather than its own: a manual single-row
+ * rewrite and a scheduled/batch rewrite both spend AI calls sequentially, so
+ * letting them overlap would just contend for the same rate limit for no
+ * benefit.
+ */
+async function rewriteOneNow(id, { autoPublish, requestedBy } = {}) {
+  if (runtimeState.is_rewriting) {
+    return { ok: false, reason: "already_running" };
+  }
+  runtimeState.is_rewriting = true;
+  try {
+    return await rewriteService.rewriteOne(id, { autoPublish, requestedBy });
+  } finally {
+    runtimeState.is_rewriting = false;
+  }
+}
+
 module.exports = {
   startScheduler,
   stopScheduler,
@@ -566,6 +587,7 @@ module.exports = {
   getSchedulerState,
   updateSchedulerConfig,
   runRewriteBatch,
+  rewriteOneNow,
   // Read by the admin queue so the UI can show whether a batch is in flight.
   isRewriteRunning: () => runtimeState.is_rewriting,
   // Same idea for the WordPress ingest, which runs on its own schedule.

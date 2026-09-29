@@ -1095,6 +1095,11 @@ async function getArticles(req, res) {
           ),
           is_original: Boolean(r.is_original),
           is_published: Boolean(r.is_published),
+          content_type: r.content_type || null,
+          ingest_type: r.ingest_type || null,
+          rewrite_status: r.rewrite_status || null,
+          rewrite_attempts: Number(r.rewrite_attempts || 0),
+          content_chars: Number(r.content_chars || 0),
           author_id: r.author_id,
           author_name: r.author_name,
           published_at: r.published_at,
@@ -1460,6 +1465,26 @@ async function rejectRewrite(req, res) {
   }
 }
 
+/** POST /api/admin/rewrites/approve-all — publish every staged rewrite at once. */
+async function approveAllRewrites(req, res) {
+  try {
+    const result = await rewriteService.approveAllStaged({
+      appliedBy: req.user?.email || req.user?.id || "admin",
+    });
+    logger.warn(
+      `admin: bulk-approve published ${result.approved}/${result.total} rewrite(s) by ${req.user?.email || req.user?.id || "unknown"}`,
+    );
+    res.json({
+      success: true,
+      message: `Published ${result.approved} rewrite(s).`,
+      data: result,
+    });
+  } catch (err) {
+    logger.error("admin.approveAllRewrites error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 /** GET /api/admin/rewrites/settings — switches, queue depth and spend. */
 async function getRewriteSettingsHandler(req, res) {
   try {
@@ -1684,6 +1709,8 @@ function publishAsIsMessage(reason) {
       return "Only WordPress content can be published as-is. RSS rows are highlights and always link out to the publisher.";
     case "already_published":
       return "This article is already published (rewritten or syndicated).";
+    case "rewrite_in_progress":
+      return "A rewrite is already in progress or staged for this article. Approve or reject it first.";
     case "no_content":
       return "This row has no body text, so there is nothing to publish.";
     default:
@@ -1773,6 +1800,78 @@ async function ingestWordPressNow(req, res, next) {
   }
 }
 
+/**
+ * GET /api/admin/wordpress/:id — one post with both its original body and any
+ * staged rewrite, for the split-pane rewrite view.
+ */
+async function getWordPressArticle(req, res) {
+  try {
+    const row = await News.findByPk(req.params.id, {
+      attributes: [
+        "id", "title", "description", "content", "source", "category", "url",
+        "image_url", "published_at", "ingest_type", "content_type",
+        "rewrite_status", "rewrite_attempts", "rewrite_error",
+        "staged_title", "staged_description", "staged_content", "staged_at",
+      ],
+    });
+    if (!row) {
+      return res.status(404).json({ success: false, message: "Article not found." });
+    }
+    res.json({ success: true, data: row });
+  } catch (err) {
+    logger.error("admin.getWordPressArticle error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
+/** Why a single-row rewrite could not be started, in words an operator can act on. */
+function rewriteOneMessage(reason) {
+  switch (reason) {
+    case "already_running":
+      return "A rewrite is already running. Try again shortly.";
+    case "not_claimable":
+      return "This row is not eligible right now — it may already be rewritten, mid-rewrite, published, or not a WordPress post.";
+    default:
+      return `Could not start the rewrite: ${reason}`;
+  }
+}
+
+/**
+ * POST /api/admin/wordpress/:id/rewrite — rewrite one WordPress post now.
+ *
+ * Fire-and-forget like runRewriteBatchNow: one AI call plus a validation pass
+ * can run long enough to risk a proxy timeout. The result lands in the normal
+ * rewrite review queue (Automation → Rewrites) as usual — this only chooses
+ * which row goes in next, it does not publish anything by itself.
+ */
+async function rewriteOneHandler(req, res) {
+  try {
+    if (scheduler.isRewriteRunning()) {
+      return res.status(409).json({
+        success: false,
+        message: rewriteOneMessage("already_running"),
+      });
+    }
+
+    scheduler
+      .rewriteOneNow(req.params.id, { requestedBy: req.user?.email || req.user?.id || "admin" })
+      .then((result) => {
+        if (!result.ok) {
+          logger.warn(`admin.rewriteOneHandler: ${req.params.id} did not complete — ${result.reason}`);
+        }
+      })
+      .catch((err) => logger.error(`admin.rewriteOneHandler failed: ${err.message}`));
+
+    res.status(202).json({
+      success: true,
+      message: "Rewriting now — review it in Automation → Rewrites shortly.",
+    });
+  } catch (err) {
+    logger.error("admin.rewriteOneHandler error:", err);
+    res.status(500).json({ success: false, message: "Server error" });
+  }
+}
+
 module.exports = {
   getUsers,
   updateUser,
@@ -1789,9 +1888,12 @@ module.exports = {
   publishAsIsHandler,
   publishManyAsIsHandler,
   ingestWordPressNow,
+  rewriteOneHandler,
+  getWordPressArticle,
   getRewriteQueue,
   approveRewrite,
   rejectRewrite,
+  approveAllRewrites,
   getRewriteSettingsHandler,
   updateRewriteSettingsHandler,
   runRewriteBatchNow,

@@ -46,9 +46,11 @@ router.post("/corpus", adminController.runCorpusAction);
 // into Trenxi articles or published verbatim. Kept apart from the RSS screens
 // because the two corpora behave differently in every respect.
 router.get("/wordpress", adminController.getWordPressSummary);
+router.get("/wordpress/:id", adminController.getWordPressArticle);
 router.post("/wordpress/ingest-now", adminController.ingestWordPressNow);
 router.post("/wordpress/publish-as-is", adminController.publishManyAsIsHandler);
 router.post("/wordpress/:id/publish-as-is", adminController.publishAsIsHandler);
+router.post("/wordpress/:id/rewrite", adminController.rewriteOneHandler);
 router.get("/articles/:id", adminController.getArticle);
 router.post("/articles", adminController.createArticle);
 // Lead-image repair. Registered before the ":id" routes so the literal path is
@@ -69,6 +71,7 @@ router.get("/rewrites", adminController.getRewriteQueue);
 router.get("/rewrites/settings", adminController.getRewriteSettingsHandler);
 router.patch("/rewrites/settings", adminController.updateRewriteSettingsHandler);
 router.post("/rewrites/run", adminController.runRewriteBatchNow);
+router.post("/rewrites/approve-all", adminController.approveAllRewrites);
 router.post("/rewrites/:id/approve", adminController.approveRewrite);
 router.post("/rewrites/:id/reject", adminController.rejectRewrite);
 

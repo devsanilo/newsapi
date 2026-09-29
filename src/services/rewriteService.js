@@ -420,7 +420,15 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
 async function claimBatch({ limit = 5, order = "recent" } = {}) {
   const safeLimit = Math.max(1, Math.min(Number(limit) || 5, 50));
   // Whitelisted ordering — never interpolate the caller's string.
-  const orderBy = order === "oldest" ? "created_at ASC" : "created_at DESC";
+  // Matches the WordPress admin list (`ORDER BY published_at DESC, created_at
+  // DESC, id DESC`) so a batch works its way down the visible list from the
+  // top. Ordering by created_at alone scattered the picks because every post
+  // ingested in one pass shares a created_at, and the admin sorts by the post's
+  // own publish date.
+  const orderBy =
+    order === "oldest"
+      ? "published_at ASC, created_at ASC, id ASC"
+      : "published_at DESC, created_at DESC, id DESC";
 
   // A publisher whose posts never produce a usable rewrite still burns an
   // attempt on every row and crowds out sources that do work, so it is cheaper
@@ -487,6 +495,58 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
 
     return rows;
   });
+}
+
+/**
+ * Claim exactly one row for an admin-triggered single rewrite.
+ *
+ * Same eligibility as claimBatch (WordPress, none/failed, under the attempt
+ * cap) but targeted by id rather than picking whichever is oldest or most
+ * recent — this is what backs the per-row "Rewrite" button, as opposed to
+ * the batch queue which chooses for itself.
+ *
+ * @returns {Promise<Object|null>} the claimed row, or null if it was not
+ *   eligible (already mid-rewrite, already published, not WordPress, ...).
+ */
+async function claimOne(id) {
+  const [, result] = await sequelize.query(
+    `UPDATE news
+        SET rewrite_status = 'processing', updated_at = NOW()
+      WHERE id = :id
+        AND ingest_type = 'wordpress'
+        AND rewrite_status IN ('none', 'failed')
+        AND rewrite_attempts < :maxAttempts`,
+    { replacements: { id, maxAttempts: MAX_ATTEMPTS } },
+  );
+  if (!result || result.affectedRows === 0) return null;
+
+  const [rows] = await sequelize.query(
+    `SELECT id, url, source, title, description, content, ingest_type
+       FROM news WHERE id = :id`,
+    { replacements: { id } },
+  );
+  return rows[0] || null;
+}
+
+/**
+ * Rewrite a single WordPress post on demand.
+ *
+ * @param {string} id
+ * @param {Object} [options] - { autoPublish, requestedBy }
+ * @returns {Promise<{ok: boolean, reason?: string, meta?: Object}>}
+ */
+async function rewriteOne(id, { autoPublish = false, requestedBy = null } = {}) {
+  const row = await claimOne(id);
+  if (!row) return { ok: false, reason: "not_claimable" };
+
+  const result = await rewriteRow(row);
+  if (!result.ok) return result;
+
+  if (autoPublish) {
+    const applied = await applyStaged(id, { appliedBy: requestedBy });
+    return { ok: true, applied: applied.ok, meta: result.meta };
+  }
+  return { ok: true, staged: true, meta: result.meta };
 }
 
 /**
@@ -817,6 +877,29 @@ async function discardStaged(id, { reason = "Rejected by reviewer" } = {}) {
 }
 
 /**
+ * Approve every staged rewrite in one go — the bulk counterpart of applyStaged.
+ *
+ * Sequential on purpose: applyStaged is a cheap DB update with no paid work,
+ * and reusing it means every row gets the same hash recompute, meta stamping
+ * and publish semantics as a single approval, so the two paths cannot drift.
+ */
+async function approveAllStaged({ appliedBy = null } = {}) {
+  const rows = await News.findAll({
+    where: { rewrite_status: "ready" },
+    attributes: ["id"],
+    raw: true,
+  });
+
+  let approved = 0;
+  for (const { id } of rows) {
+    const result = await applyStaged(id, { appliedBy });
+    if (result.ok) approved += 1;
+  }
+
+  return { approved, total: rows.length };
+}
+
+/**
  * Publish a WordPress post exactly as the publisher wrote it.
  *
  * The alternative to rewriting: the row already holds the complete post, so it
@@ -841,6 +924,12 @@ async function publishAsIs(id, { publishedBy = null } = {}) {
   }
   if (row.content_type === "syndicated" || row.content_type === "rewritten") {
     return { ok: false, reason: "already_published" };
+  }
+  // A rewrite is in flight or already staged for review — publishing verbatim
+  // now would race it: the row could go live as-is and then have the rewrite
+  // land on top of it moments later, or vice versa.
+  if (row.rewrite_status === "processing" || row.rewrite_status === "ready") {
+    return { ok: false, reason: "rewrite_in_progress" };
   }
   // Nothing to publish: the ingest pass skips posts below the minimum length,
   // so an empty body means something went wrong rather than being brief.
@@ -956,6 +1045,8 @@ async function getQueueStats() {  const [[row]] = await sequelize.query(`
 
 module.exports = {
   claimBatch,
+  claimOne,
+  rewriteOne,
   rewriteRow,
   fetchSourceText,
   validateRewrite,
@@ -967,6 +1058,7 @@ module.exports = {
   publishManyAsIs,
   getWordPressStats,
   discardStaged,
+  approveAllStaged,
   markFailed,
   release,
   isEnvironmentError,
