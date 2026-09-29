@@ -409,6 +409,36 @@ function validateRewrite(parsed, { sourceText, sourceTitle }) {
 }
 
 /**
+ * Put rows stranded in 'processing' back into the queue.
+ *
+ * A batch sets every claimed row to 'processing' up front and then works
+ * through them one at a time, so anything that stops it midway — a redeploy, a
+ * crash, or the early bail-out on a broken environment — leaves the untouched
+ * rows claimed forever. They then read as "Rewriting…" in the admin with
+ * nothing actually running. Called before every claim AND on the rewrite cron
+ * tick, so it heals without a new batch having to be triggered by hand.
+ *
+ * @returns {Promise<number>} how many rows were recovered
+ */
+async function recoverStaleClaims({ transaction = null } = {}) {
+  const [, result] = await sequelize.query(
+    `UPDATE news
+        SET rewrite_status = 'failed',
+            rewrite_error = 'Claim expired (previous run did not finish)'
+      WHERE rewrite_status = 'processing'
+        AND updated_at < DATE_SUB(NOW(), INTERVAL :timeout MINUTE)`,
+    { replacements: { timeout: CLAIM_TIMEOUT_MINUTES }, transaction },
+  );
+  const recovered = result?.affectedRows || 0;
+  if (recovered > 0) {
+    logger.warn(
+      `rewriteService: recovered ${recovered} stranded rewrite claim(s).`,
+    );
+  }
+  return recovered;
+}
+
+/**
  * Claim a batch of rows for rewriting.
  *
  * Uses FOR UPDATE SKIP LOCKED so two workers can run concurrently without
@@ -442,19 +472,7 @@ async function claimBatch({ limit = 5, order = "recent" } = {}) {
   return sequelize.transaction(async (t) => {
     // Recover anything a previous interrupted run left behind, so a restart
     // cannot permanently strand a row.
-    const [, recovered] = await sequelize.query(
-      `UPDATE news
-          SET rewrite_status = 'failed',
-              rewrite_error = 'Claim expired (previous run did not finish)'
-        WHERE rewrite_status = 'processing'
-          AND updated_at < DATE_SUB(NOW(), INTERVAL :timeout MINUTE)`,
-      { replacements: { timeout: CLAIM_TIMEOUT_MINUTES }, transaction: t },
-    );
-    if (recovered && recovered.affectedRows > 0) {
-      logger.warn(
-        `rewriteService.claimBatch: recovered ${recovered.affectedRows} stranded row(s).`,
-      );
-    }
+    await recoverStaleClaims({ transaction: t });
 
     // Only WordPress rows are claimed. An RSS row is a headline highlight: it
     // links out to the publisher and must never acquire a Trenxi article page,
@@ -1049,6 +1067,7 @@ async function getQueueStats() {  const [[row]] = await sequelize.query(`
 
 module.exports = {
   claimBatch,
+  recoverStaleClaims,
   claimOne,
   rewriteOne,
   rewriteRow,

@@ -244,38 +244,60 @@ async function processRewriteBatch({ batchSize, shouldPublish }) {
   let published = 0;
   let cost = 0;
   let environmentError = false;
+  const processed = new Set();
 
-  for (const row of claimed) {
-    const result = await rewriteService.rewriteRow(row);
-    if (result.ok) {
-      ok += 1;
-      cost += Number(result.meta?.cost_usd || 0);
+  try {
+    for (const row of claimed) {
+      const result = await rewriteService.rewriteRow(row);
+      // Marked reached before the branches so an early `break` below cannot
+      // leave this row looking unprocessed.
+      processed.add(row.id);
+      if (result.ok) {
+        ok += 1;
+        cost += Number(result.meta?.cost_usd || 0);
 
-      if (shouldPublish) {
-        // The guard rails have already passed at this point, so this is the
-        // only quality check standing between the model and the live site.
-        const applied = await rewriteService.applyStaged(row.id, {
-          appliedBy: "auto-publish",
-        });
-        if (applied.ok) {
-          published += 1;
-        } else {
-          logger.warn(
-            `Cron: rewrite for ${row.id} staged but not published: ${applied.reason}`,
+        if (shouldPublish) {
+          // The guard rails have already passed at this point, so this is the
+          // only quality check standing between the model and the live site.
+          const applied = await rewriteService.applyStaged(row.id, {
+            appliedBy: "auto-publish",
+          });
+          if (applied.ok) {
+            published += 1;
+          } else {
+            logger.warn(
+              `Cron: rewrite for ${row.id} staged but not published: ${applied.reason}`,
+            );
+          }
+        }
+      } else {
+        failed += 1;
+        // Once the environment is broken (no key, no scraper) every remaining
+        // row would fail the same way, so stop rather than churn the queue.
+        if (result.reason === "environment_error") {
+          environmentError = true;
+          logger.error(
+            "Cron: AI rewrite aborted early — environment error. Fix the API key or scraper.",
           );
+          break;
         }
       }
-    } else {
-      failed += 1;
-      // Once the environment is broken (no key, no scraper) every remaining
-      // row would fail the same way, so stop rather than churn the queue.
-      if (result.reason === "environment_error") {
-        environmentError = true;
-        logger.error(
-          "Cron: AI rewrite aborted early — environment error. Fix the API key or scraper.",
-        );
-        break;
-      }
+    }
+  } finally {
+    // Anything claimed but never reached — the early break above, or a throw —
+    // goes back to the queue. Leaving it claimed is what made rows sit on
+    // "Rewriting…" in the admin with no batch actually running.
+    const stranded = claimed.filter((row) => !processed.has(row.id));
+    for (const row of stranded) {
+      await rewriteService.release(
+        row.id,
+        "Rewrite batch stopped before reaching this article",
+      );
+    }
+    if (stranded.length > 0) {
+      logger.warn(
+        `Cron: released ${stranded.length} unprocessed claim(s) back to the queue.`,
+      );
     }
   }
 
@@ -315,6 +337,15 @@ function ensureRewriteSchedule() {
     if (runtimeState.is_rewriting) {
       logger.warn("Cron: Previous AI rewrite batch still running, skipping tick");
       return;
+    }
+
+    // Heal claims stranded by a killed batch. Runs BEFORE the enabled check so
+    // it works even when background rewriting is switched off — a manual batch
+    // strands rows too, and they would otherwise sit on "Rewriting…" forever.
+    try {
+      await rewriteService.recoverStaleClaims();
+    } catch (error) {
+      logger.warn(`Cron: stranded-claim recovery failed: ${error.message}`);
     }
 
     let settings;
