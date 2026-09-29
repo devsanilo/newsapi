@@ -110,11 +110,22 @@ class WPCrawler {
       );
     }
 
+    // Category names and featured-image URLs are only inlined by `_embed`, which
+    // many publishers block (they answer with HTML and HTTP 200, so the plain
+    // payload is what we usually get). Resolve both from that plain payload
+    // instead: one taxonomy request plus one media request per page, not one
+    // request per post. Without this every post fell back to the source's own
+    // category and image-less posts stayed image-less.
+    const [categoryMap, mediaMap] = await Promise.all([
+      this._fetchCategoryMap(wpApiUrl),
+      this._fetchMediaMap(wpApiUrl, posts),
+    ]);
+
     const articles = [];
     let tooShort = 0;
 
     for (const post of posts) {
-      const article = this._normalizePost(post, source);
+      const article = this._normalizePost(post, source, { categoryMap, mediaMap });
       if (!article) continue;
       if (article._words < MIN_CONTENT_WORDS) {
         tooShort += 1;
@@ -224,7 +235,7 @@ class WPCrawler {
   /**
    * Normalise one WordPress post into the article shape `storeArticles` wants.
    */
-  _normalizePost(post, source) {
+  _normalizePost(post, source, { categoryMap = {}, mediaMap = {} } = {}) {
     try {
       const title = cleanTitle(post?.title?.rendered || "");
       const link = post?.link?.trim();
@@ -254,9 +265,9 @@ class WPCrawler {
         title,
         description,
         content,
-        image_url: this._imageUrl(post, rawHtml),
+        image_url: this._imageUrl(post, rawHtml, mediaMap),
         source: sourceSlug,
-        category: this._category(post, source),
+        category: this._category(post, source, categoryMap),
         url: link,
         hash: generateHash(title, sourceSlug, publishedAt),
         tags: JSON.stringify(tags),
@@ -281,8 +292,11 @@ class WPCrawler {
     }
   }
 
-  /** Featured image from embedded media, else the first image in the body. */
-  _imageUrl(post, rawHtml) {
+  /**
+   * Lead image: embedded featured media, then the featured-media map (the plain
+   * payload carries only the attachment ID), then the first body image.
+   */
+  _imageUrl(post, rawHtml, mediaMap = {}) {
     const media = post?._embedded?.["wp:featuredmedia"];
     if (Array.isArray(media) && media[0]) {
       const url =
@@ -291,6 +305,9 @@ class WPCrawler {
         media[0].media_details?.sizes?.large?.source_url;
       if (url) return url;
     }
+
+    const featuredId = post?.featured_media;
+    if (featuredId && mediaMap[featuredId]) return mediaMap[featuredId];
 
     const match = String(rawHtml || "").match(
       /<img[^>]+(?:data-src|src)=["']([^"']+\.(?:jpe?g|png|webp|gif)[^"']*)["']/i,
@@ -303,10 +320,14 @@ class WPCrawler {
    *
    * WordPress categories are free text per site ("Politics", "Metro", "Sports
    * Extra"), and the app renders a fixed set, so they are canonicalised with the
-   * source's configured category as the fallback.   *
-   * Terms are only present when the embedded request succeeded; publishers that
-   * block `_embed` simply fall back to the source's own category.   */
-  _category(post, source) {
+   * source's configured category as the fallback.
+   *
+   * The name comes from the embedded terms when `_embed` worked, and otherwise
+   * from the `categories` ID list resolved through the taxonomy map — the plain
+   * payload carries IDs only, which is why every post used to land in the
+   * source's category.
+   */
+  _category(post, source, categoryMap = {}) {
     const fallback = source.category || "general";
     const terms = post?._embedded?.["wp:term"];
     if (Array.isArray(terms)) {
@@ -320,7 +341,80 @@ class WPCrawler {
         }
       }
     }
+
+    const ids = Array.isArray(post?.categories) ? post.categories : [];
+    for (const id of ids) {
+      const name = categoryMap[id];
+      if (!name) continue;
+      const mapped = toCanonicalCategory(name, null);
+      if (mapped) return mapped;
+    }
+
     return toCanonicalCategory(fallback, "general");
+  }
+
+  /**
+   * id → name for every category on the site, in one request.
+   *
+   * Best-effort: a publisher that blocks the taxonomy route still ingests, it
+   * just falls back to the source's own category.
+   */
+  async _fetchCategoryMap(wpApiUrl) {
+    try {
+      const terms = await this._request(`${wpApiUrl}/categories`, {
+        params: { per_page: 100, orderby: "count", order: "desc" },
+      });
+      if (!Array.isArray(terms)) return {};
+      const map = {};
+      for (const term of terms) {
+        if (term?.id != null && term?.name) map[term.id] = term.name;
+      }
+      return map;
+    } catch (err) {
+      logger.warn(
+        `WordPress: category lookup failed for ${wpApiUrl} (${err.message}) — using the source category`,
+      );
+      return {};
+    }
+  }
+
+  /**
+   * id → URL for the featured media of every post on this page, in one request.
+   *
+   * The plain payload carries only `featured_media` (an attachment ID), so
+   * without this the lead image is missing for every post whose body has no
+   * inline <img> — which is most of them.
+   */
+  async _fetchMediaMap(wpApiUrl, posts) {
+    const ids = [
+      ...new Set(
+        (posts || [])
+          .map((p) => p?.featured_media)
+          .filter((id) => Number.isInteger(id) && id > 0),
+      ),
+    ];
+    if (ids.length === 0) return {};
+
+    try {
+      const media = await this._request(`${wpApiUrl}/media`, {
+        params: { include: ids.join(","), per_page: 100 },
+      });
+      if (!Array.isArray(media)) return {};
+      const map = {};
+      for (const item of media) {
+        const url =
+          item?.source_url ||
+          item?.media_details?.sizes?.full?.source_url ||
+          item?.media_details?.sizes?.large?.source_url;
+        if (item?.id != null && url) map[item.id] = url;
+      }
+      return map;
+    } catch (err) {
+      logger.warn(
+        `WordPress: featured-media lookup failed for ${wpApiUrl} (${err.message}) — ${ids.length} image(s) may be missing`,
+      );
+      return {};
+    }
   }
 }
 

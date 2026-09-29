@@ -71,6 +71,8 @@ const KEYWORD_MAP = [
       "europe",
       "asia",
       "middle east",
+      "foreign",
+      "americas",
     ],
   },
   {
@@ -144,7 +146,22 @@ const KEYWORD_MAP = [
   },
   {
     category: "local",
-    keywords: ["local", "city", "state", "community", "metro"],
+    keywords: [
+      "local",
+      "city",
+      "state",
+      "community",
+      "metro",
+      // Publisher section names for regional reporting (Nigerian zones and the
+      // generic equivalents), which otherwise all land in "general".
+      "south west",
+      "south east",
+      "south south",
+      "north west",
+      "north east",
+      "north central",
+      "regional",
+    ],
   },
 ];
 
