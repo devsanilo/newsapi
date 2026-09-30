@@ -1853,18 +1853,29 @@ async function rewriteOneHandler(req, res) {
       });
     }
 
+    // Explicit opt-in per call: when true the rewrite is published the moment
+    // it validates, using the rewritten title and body (applyStaged).
+    const autoPublish = req.body?.autoPublish === true;
+
     scheduler
-      .rewriteOneNow(req.params.id, { requestedBy: req.user?.email || req.user?.id || "admin" })
+      .rewriteOneNow(req.params.id, {
+        autoPublish,
+        requestedBy: req.user?.email || req.user?.id || "admin",
+      })
       .then((result) => {
         if (!result.ok) {
           logger.warn(`admin.rewriteOneHandler: ${req.params.id} did not complete — ${result.reason}`);
+        } else if (result.applied) {
+          logger.warn(`admin.rewriteOneHandler: ${req.params.id} AUTO-PUBLISHED`);
         }
       })
       .catch((err) => logger.error(`admin.rewriteOneHandler failed: ${err.message}`));
 
     res.status(202).json({
       success: true,
-      message: "Rewriting now — review it in Automation → Rewrites shortly.",
+      message: autoPublish
+        ? "Rewriting now — it publishes automatically once it passes the checks."
+        : "Rewriting now — review it in Automation → Rewrites shortly.",
     });
   } catch (err) {
     logger.error("admin.rewriteOneHandler error:", err);
