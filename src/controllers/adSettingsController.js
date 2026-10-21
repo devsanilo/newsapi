@@ -139,6 +139,29 @@ async function getMobileSettings(req, res) {
  * slot is omitted entirely when its own row is switched off — AdSlot already
  * renders nothing unless it has a slot ID.
  */
+/**
+ * One Adsterra placement: its zone key plus the size that zone was created at.
+ *
+ * The size is stored as "WxH" because the Adsterra snippet must declare the
+ * exact dimensions of the zone; a mismatch renders a cropped or letterboxed
+ * creative. An unparseable or missing value falls back to the placement's
+ * conventional size rather than silently producing a 0×0 iframe.
+ */
+function adsterraPlacement(settings, keyName, sizeName, placement) {
+  const fallback = AdSetting.ADSTERRA_DEFAULTS[placement];
+  const [defaultWidth, defaultHeight] = fallback.size.split("x").map(Number);
+  const raw = String(unitValue(settings, sizeName) || fallback.size)
+    .toLowerCase()
+    .replace(/\s/g, "");
+  const match = raw.match(/^(\d+)x(\d+)$/);
+
+  return {
+    key: unitValue(settings, keyName) || fallback.key,
+    width: match ? Number(match[1]) : defaultWidth,
+    height: match ? Number(match[2]) : defaultHeight,
+  };
+}
+
 async function getWebSettings(req, res) {
   try {
     const settings = await AdSetting.getAllSettings();
@@ -153,14 +176,30 @@ async function getWebSettings(req, res) {
       success: true,
       data: {
         enabled: true,
-        clientId:
-          unitValue(settings, AdSetting.KEYS.ADSENSE_CLIENT_ID) ||
-          process.env.ADSENSE_CLIENT_ID ||
-          "ca-pub-8008635097866263",
-        slots: {
-          banner: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_BANNER),
-          sidebar: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_SIDEBAR),
-          infeed: unitValue(settings, AdSetting.KEYS.ADSENSE_SLOT_INFEED),
+        provider: "adsterra",
+        // Per-account script base from GET CODE; the zone key is appended to it.
+        scriptBase:
+          unitValue(settings, AdSetting.KEYS.ADSTERRA_SCRIPT_BASE) ||
+          AdSetting.ADSTERRA_DEFAULTS.scriptBase,
+        placements: {
+          banner: adsterraPlacement(
+            settings,
+            AdSetting.KEYS.ADSTERRA_BANNER_KEY,
+            AdSetting.KEYS.ADSTERRA_BANNER_SIZE,
+            "banner",
+          ),
+          infeed: adsterraPlacement(
+            settings,
+            AdSetting.KEYS.ADSTERRA_INFEED_KEY,
+            AdSetting.KEYS.ADSTERRA_INFEED_SIZE,
+            "infeed",
+          ),
+          sidebar: adsterraPlacement(
+            settings,
+            AdSetting.KEYS.ADSTERRA_SIDEBAR_KEY,
+            AdSetting.KEYS.ADSTERRA_SIDEBAR_SIZE,
+            "sidebar",
+          ),
         },
       },
     });

@@ -67,10 +67,36 @@ AdSetting.KEYS = {
   ADSENSE_SLOT_SIDEBAR: "adsense_slot_sidebar",
   ADSENSE_SLOT_INFEED: "adsense_slot_infeed",
 
+  // Web Adsterra. One zone key per placement; Adsterra fixes a banner's size
+  // when the zone is created, so each key carries its WxH alongside it.
+  ADSTERRA_SCRIPT_BASE: "adsterra_script_base",
+  ADSTERRA_BANNER_KEY: "adsterra_banner_key",
+  ADSTERRA_BANNER_SIZE: "adsterra_banner_size",
+  ADSTERRA_INFEED_KEY: "adsterra_infeed_key",
+  ADSTERRA_INFEED_SIZE: "adsterra_infeed_size",
+  ADSTERRA_SIDEBAR_KEY: "adsterra_sidebar_key",
+  ADSTERRA_SIDEBAR_SIZE: "adsterra_sidebar_size",
+
   // Ad placement settings
   MOBILE_INTERSTITIAL_FREQUENCY: "mobile_interstitial_frequency",
   MOBILE_INFEED_FREQUENCY: "mobile_infeed_frequency",
   REWARDED_ADS_DAILY_LIMIT: "rewarded_ads_daily_limit",
+};
+
+// Adsterra zones for trenxi.com (account 6139663).
+//
+// IMPORTANT: the numeric ID in the ad-unit table (31848632) is NOT the key the
+// tag uses. Both the key and the script base come from the unit's "GET CODE"
+// snippet — e.g.
+//   atOptions = { key: 'de72c5c0…', format: 'iframe', height: 90, width: 728 }
+//   <script src="https://bauval.org/22/de72c5c0…"></script>
+// The base is per-account and can change, so it is a setting rather than a
+// constant. A size is fixed when the zone is created.
+AdSetting.ADSTERRA_DEFAULTS = {
+  scriptBase: "https://bauval.org/22",
+  banner: { key: "de72c5c0aa1ea9ef6d00a2f52a424f62", size: "728x90" },
+  infeed: { key: "1082cc006c49d48d5ed5d9d01f6a26da", size: "300x250" },
+  sidebar: { key: "82282df786e874a14c334a9d1480c3b1", size: "160x600" },
 };
 
 // Get all settings as an object
@@ -137,7 +163,7 @@ AdSetting.initializeDefaults = async function () {
     {
       key: this.KEYS.WEB_ENABLED,
       value: "true",
-      description: "Serve ads on the website (AdSense)",
+      description: "Serve ads on the website (Adsterra)",
     },
     {
       key: this.KEYS.ANDROID_ENABLED,
@@ -171,6 +197,34 @@ AdSetting.initializeDefaults = async function () {
       key: this.KEYS.REWARDED_ADS_DAILY_LIMIT,
       value: "5",
       description: "Max rewarded ads per day",
+    },
+
+    // Adsterra. Script base plus one zone per placement; both come from the
+    // dashboard's GET CODE, and the numeric ad-unit ID is not usable as a key.
+    {
+      key: this.KEYS.ADSTERRA_SCRIPT_BASE,
+      value: this.ADSTERRA_DEFAULTS.scriptBase,
+      description: "Adsterra script base URL (from GET CODE)",
+    },
+    {
+      key: this.KEYS.ADSTERRA_BANNER_KEY,
+      value: this.ADSTERRA_DEFAULTS.banner.key,
+      description: `Adsterra banner zone key (${this.ADSTERRA_DEFAULTS.banner.size})`,
+    },
+    {
+      key: this.KEYS.ADSTERRA_BANNER_SIZE,
+      value: this.ADSTERRA_DEFAULTS.banner.size,
+      description: "Banner zone size, WxH",
+    },
+    {
+      key: this.KEYS.ADSTERRA_INFEED_SIZE,
+      value: this.ADSTERRA_DEFAULTS.infeed.size,
+      description: "In-feed zone size, WxH",
+    },
+    {
+      key: this.KEYS.ADSTERRA_SIDEBAR_SIZE,
+      value: this.ADSTERRA_DEFAULTS.sidebar.size,
+      description: "Sidebar zone size, WxH",
     },
   ];
 
