@@ -217,9 +217,19 @@ AdSetting.initializeDefaults = async function () {
       description: "Banner zone size, WxH",
     },
     {
+      key: this.KEYS.ADSTERRA_INFEED_KEY,
+      value: this.ADSTERRA_DEFAULTS.infeed.key,
+      description: `Adsterra in-feed zone key (${this.ADSTERRA_DEFAULTS.infeed.size})`,
+    },
+    {
       key: this.KEYS.ADSTERRA_INFEED_SIZE,
       value: this.ADSTERRA_DEFAULTS.infeed.size,
       description: "In-feed zone size, WxH",
+    },
+    {
+      key: this.KEYS.ADSTERRA_SIDEBAR_KEY,
+      value: this.ADSTERRA_DEFAULTS.sidebar.key,
+      description: `Adsterra sidebar zone key (${this.ADSTERRA_DEFAULTS.sidebar.size})`,
     },
     {
       key: this.KEYS.ADSTERRA_SIDEBAR_SIZE,
