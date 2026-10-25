@@ -1747,8 +1747,10 @@ async function publishAsIsHandler(req, res, next) {
  *
  * Body: { limit }
  *
- * Bounded, because this releases the publisher's text verbatim and the whole
- * backlog should never go out on one call.
+ * Capped at WP_BULK_PUBLISH_MAX (1500 by default) because this releases the
+ * publisher's text verbatim, and one call should not be able to put the entire
+ * backlog live by accident. The pass is re-runnable, so a larger backlog is
+ * cleared in consecutive calls.
  */
 async function publishManyAsIsHandler(req, res, next) {
   try {

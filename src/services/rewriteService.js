@@ -860,10 +860,10 @@ async function applyStaged(id, { appliedBy = null } = {}) {
     hash: generateHash(title, row.source, row.published_at || row.created_at),
     content_type: "rewritten",
     rewrite_status: "applied",
-    // Applying the rewrite is the publish step. WordPress rows are ingested
-    // unpublished so the publisher's own text is never served to readers; this
-    // is what puts the finished Trenxi article live. It covers both paths —
-    // auto-publish, and an admin approving a staged rewrite.
+    // Applying the rewrite is the publish step. Rows held for review are
+    // ingested unpublished so the publisher's own text is never served before
+    // a decision; this is what puts the finished Trenxi article live. It covers
+    // both paths — auto-publish, and an admin approving a staged rewrite.
     is_published: true,
     staged_title: null,
     staged_description: null,
@@ -981,14 +981,39 @@ async function publishAsIs(id, { publishedBy = null } = {}) {
 }
 
 /**
+ * Ceiling for one bulk publish call.
+ *
+ * Deliberately a hard limit rather than "as many as there are": this releases
+ * the publisher's text verbatim, and a typo in the admin field must not be able
+ * to put the whole 9k backlog live at once. 1500 is the largest single pass an
+ * operator is expected to review the result of; the endpoint is re-runnable, so
+ * a bigger backlog is cleared in consecutive passes rather than one blind one.
+ */
+const MAX_BULK_PUBLISH = Number(process.env.WP_BULK_PUBLISH_MAX || 1500);
+
+// Rows updated per statement. Bounds how long one UPDATE holds its row locks so
+// a large pass cannot block ingestion or a rewrite claim for its whole duration.
+const BULK_PUBLISH_CHUNK = 500;
+
+/**
  * Publish a batch of WordPress posts as-is.
  *
- * Bounded on purpose: this releases publisher text verbatim, and running it
- * over the whole backlog in one call is not something that should be possible
- * by accident.
+ * Set-based rather than a loop over publishAsIs(): at 1500 rows the per-row
+ * read-then-write meant 3000 round trips inside one HTTP request, which is slow
+ * enough to risk a proxy timeout midway through and leave the operator unsure
+ * what landed. One guarded UPDATE per chunk is a handful of statements, and
+ * because the guards live in the WHERE clause a row is never published while a
+ * rewrite is in flight for it — the read-then-write loop could only approximate
+ * that by re-checking in application code.
+ *
+ * The values written are exactly publishAsIs()'s, including the merge into
+ * rewrite_meta (JSON_SET keeps any failure metadata already on a row).
  */
 async function publishManyAsIs({ limit = 20, publishedBy = null } = {}) {
-  const safeLimit = Math.max(1, Math.min(Number(limit) || 20, 200));
+  const safeLimit = Math.max(
+    1,
+    Math.min(Number(limit) || 20, MAX_BULK_PUBLISH),
+  );
 
   const rows = await News.findAll({
     where: {
@@ -1004,14 +1029,71 @@ async function publishManyAsIs({ limit = 20, publishedBy = null } = {}) {
     raw: true,
   });
 
-  let published = 0;
-  const skipped = [];
-
-  for (const row of rows) {
-    const result = await publishAsIs(row.id, { publishedBy });
-    if (result.ok) published += 1;
-    else skipped.push({ id: row.id, reason: result.reason });
+  if (rows.length === 0) {
+    return { published: 0, scanned: 0, skipped: [], limit: safeLimit };
   }
+
+  // Judge the rows publishAsIs() would refuse before touching the database, so
+  // the report explains a short count instead of silently returning fewer than
+  // asked for. The same conditions are repeated in the UPDATE below, which is
+  // what actually protects against a concurrent change.
+  const skipped = [];
+  const publishable = [];
+  for (const row of rows) {
+    if (row.rewrite_status === "processing" || row.rewrite_status === "ready") {
+      skipped.push({ id: row.id, reason: "rewrite_in_progress" });
+    } else if (!String(row.content || "").trim()) {
+      skipped.push({ id: row.id, reason: "no_content" });
+    } else {
+      publishable.push(row.id);
+    }
+  }
+
+  const at = new Date().toISOString();
+  let published = 0;
+
+  for (let i = 0; i < publishable.length; i += BULK_PUBLISH_CHUNK) {
+    const ids = publishable.slice(i, i + BULK_PUBLISH_CHUNK);
+
+    const [result] = await sequelize.query(
+      `UPDATE news
+          SET content_type = 'syndicated',
+              rewrite_status = 'skipped',
+              is_published = 1,
+              staged_title = NULL,
+              staged_description = NULL,
+              staged_content = NULL,
+              staged_at = NULL,
+              rewrite_error = NULL,
+              rewrite_meta = JSON_SET(
+                IF(JSON_TYPE(rewrite_meta) = 'OBJECT', rewrite_meta, JSON_OBJECT()),
+                '$.published_as_is_at', :at,
+                '$.published_as_is_by', :publishedBy
+              ),
+              updated_at = NOW()
+        WHERE id IN (:ids)
+          AND ingest_type = 'wordpress'
+          AND content_type = 'aggregated'
+          AND is_published = 0
+          AND rewrite_status NOT IN ('processing', 'ready')`,
+      {
+        replacements: { ids, at, publishedBy },
+      },
+    );
+
+    published += Number(result?.affectedRows || 0);
+  }
+
+  // A row whose state changed between the SELECT and the UPDATE is refused by
+  // the guards above. Report it rather than letting the totals not add up.
+  const blocked = publishable.length - published;
+  if (blocked > 0) {
+    skipped.push({ reason: "changed_since_selected", count: blocked });
+  }
+
+  logger.warn(
+    `rewrite: published ${published} WordPress post(s) as-is (limit ${safeLimit}) by ${publishedBy || "unknown"}`,
+  );
 
   return { published, scanned: rows.length, skipped, limit: safeLimit };
 }
