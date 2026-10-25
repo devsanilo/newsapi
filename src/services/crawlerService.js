@@ -5,14 +5,16 @@
  *   - feed_type 'rss'       → headline highlights. Published immediately, they
  *                             link out to the publisher, and are never rewritten.
  *   - feed_type 'wordpress' → the WordPress REST API returns the complete post,
- *                             so the row carries real source text and is held
- *                             UNPUBLISHED until the rewrite pipeline turns it
- *                             into a Trenxi article.
+ *                             so the row carries real source text. Published
+ *                             verbatim on arrival unless the admin turns
+ *                             autoPublishAsIs off, in which case it waits
+ *                             unpublished for a rewrite or a manual decision.
  */
 const rssCrawler = require('../crawlers/rssCrawler');
 const wpCrawler = require('../crawlers/wpCrawler');
 const htmlScraper = require('../crawlers/htmlScraper');
 const newsService = require('./newsService');
+const { getRewriteSettings } = require('./rewriteSettings');
 const Source = require('../models/Source');
 const logger = require('../utils/logger');
 
@@ -140,8 +142,18 @@ class CrawlerService {
       return { articles: 0, inserted: 0, skipped: 0, errors: 0, sources: 0, failed: [] };
     }
 
-    logger.info(`Found ${sources.length} WordPress sources.`);
     const perPage = Number(process.env.WP_PER_PAGE || 20);
+    // Read once, not per source: the switch governs the whole pass, and a
+    // failure to read it must not abort ingestion (getRewriteSettings degrades
+    // to its defaults).
+    const { autoPublishAsIs } = await getRewriteSettings();
+
+    logger.info(
+      `Found ${sources.length} WordPress sources — ` +
+        (autoPublishAsIs
+          ? "new posts publish as-is on arrival"
+          : "new posts are held unpublished for a decision"),
+    );
 
     let articles = 0;
     let inserted = 0;
@@ -151,7 +163,10 @@ class CrawlerService {
 
     for (const source of sources) {
       try {
-        const posts = await wpCrawler.fetchFromSource(source, { perPage });
+        const posts = await wpCrawler.fetchFromSource(source, {
+          perPage,
+          autoPublishAsIs,
+        });
         if (posts.length === 0) continue;
 
         const stored = await newsService.storeArticles(posts);
@@ -180,8 +195,10 @@ class CrawlerService {
 
     if (source.feed_type === 'wordpress') {
       logger.info(`Ingesting WordPress source: ${source.name}`);
+      const { autoPublishAsIs } = await getRewriteSettings();
       const posts = await wpCrawler.fetchFromSource(source, {
         perPage: Number(process.env.WP_PER_PAGE || 20),
+        autoPublishAsIs,
       });
       if (posts.length === 0) {
         return { articles: 0, inserted: 0, skipped: 0, errors: 0 };

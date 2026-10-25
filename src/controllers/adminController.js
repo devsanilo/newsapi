@@ -1527,11 +1527,15 @@ async function updateRewriteSettingsHandler(req, res) {
     if (typeof body.autoPublish === "boolean") patch.autoPublish = body.autoPublish;
     if (body.batchSize !== undefined) patch.batchSize = body.batchSize;
     if (typeof body.wpIngest === "boolean") patch.wpIngest = body.wpIngest;
+    if (typeof body.autoPublishAsIs === "boolean") {
+      patch.autoPublishAsIs = body.autoPublishAsIs;
+    }
 
     if (Object.keys(patch).length === 0) {
       return res.status(400).json({
         success: false,
-        message: "Provide at least one of: enabled, autoPublish, batchSize, wpIngest.",
+        message:
+          "Provide at least one of: enabled, autoPublish, batchSize, wpIngest, autoPublishAsIs.",
       });
     }
 

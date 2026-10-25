@@ -9,6 +9,10 @@
  * Two of these switches are consequential and both default to OFF:
  *   enabled     — spends money on a third-party API
  *   autoPublish — puts AI-written content on the live site with no human check
+ *
+ * `autoPublishAsIs` defaults to ON: WordPress posts go live verbatim as they
+ * arrive rather than accumulating in the decision queue. See wpCrawler for what
+ * that costs — a row published this way is no longer eligible for a rewrite.
  */
 const Setting = require("../models/Setting");
 const logger = require("../utils/logger");
@@ -22,6 +26,7 @@ const DEFAULTS = {
   // crawler switch meant stopping the crawler silently stopped article
   // production too. It is a no-op until sources are flagged WordPress.
   wpIngest: true,
+  autoPublishAsIs: true,
 };
 
 /** Interpret a stored value, falling back to the environment, then a default. */
@@ -54,12 +59,14 @@ function resolveNumber(storedValue, envName, fallback) {
  */
 async function getRewriteSettings() {
   try {
-    const [enabled, autoPublish, batchSize, wpIngest] = await Promise.all([
-      Setting.getValue(Setting.KEYS.REWRITE_ENABLED, null),
-      Setting.getValue(Setting.KEYS.REWRITE_AUTO_PUBLISH, null),
-      Setting.getValue(Setting.KEYS.REWRITE_BATCH_SIZE, null),
-      Setting.getValue(Setting.KEYS.WP_INGEST_ENABLED, null),
-    ]);
+    const [enabled, autoPublish, batchSize, wpIngest, autoPublishAsIs] =
+      await Promise.all([
+        Setting.getValue(Setting.KEYS.REWRITE_ENABLED, null),
+        Setting.getValue(Setting.KEYS.REWRITE_AUTO_PUBLISH, null),
+        Setting.getValue(Setting.KEYS.REWRITE_BATCH_SIZE, null),
+        Setting.getValue(Setting.KEYS.WP_INGEST_ENABLED, null),
+        Setting.getValue(Setting.KEYS.WP_AUTO_PUBLISH_AS_IS, null),
+      ]);
 
     return {
       enabled: resolveBoolean(enabled, "REWRITE_ENABLED", DEFAULTS.enabled),
@@ -73,6 +80,11 @@ async function getRewriteSettings() {
         50,
       ),
       wpIngest: resolveBoolean(wpIngest, "WP_INGEST_ENABLED", DEFAULTS.wpIngest),
+      autoPublishAsIs: resolveBoolean(
+        autoPublishAsIs,
+        "WP_AUTO_PUBLISH_AS_IS",
+        DEFAULTS.autoPublishAsIs,
+      ),
     };
   } catch (err) {
     logger.warn(
@@ -83,7 +95,10 @@ async function getRewriteSettings() {
 }
 
 /** Persist a subset of settings. Omitted keys are left untouched. */
-async function updateRewriteSettings({ enabled, autoPublish, batchSize, wpIngest }, updatedBy) {
+async function updateRewriteSettings(
+  { enabled, autoPublish, batchSize, wpIngest, autoPublishAsIs },
+  updatedBy,
+) {
   const writes = [];
 
   if (wpIngest !== undefined) {
@@ -92,6 +107,17 @@ async function updateRewriteSettings({ enabled, autoPublish, batchSize, wpIngest
         Setting.KEYS.WP_INGEST_ENABLED,
         wpIngest ? "true" : "false",
         "Ingest WordPress posts on their own schedule, independently of the crawler",
+        "rewrite",
+      ),
+    );
+  }
+
+  if (autoPublishAsIs !== undefined) {
+    writes.push(
+      Setting.setValue(
+        Setting.KEYS.WP_AUTO_PUBLISH_AS_IS,
+        autoPublishAsIs ? "true" : "false",
+        "Publish ingested WordPress posts verbatim instead of holding them for review",
         "rewrite",
       ),
     );

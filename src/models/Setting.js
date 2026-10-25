@@ -88,6 +88,9 @@ Setting.KEYS = {
   // scheduler, so stopping the crawler stops highlights without also stopping
   // article production.
   WP_INGEST_ENABLED: "wp_ingest_enabled",
+  // Publish a WordPress post verbatim the moment it is ingested, instead of
+  // holding it back for the rewrite-or-publish-as-is decision.
+  WP_AUTO_PUBLISH_AS_IS: "wp_auto_publish_as_is",
 };
 
 // Get all settings as an object
@@ -167,6 +170,7 @@ Setting.initializeDefaults = async function () {
     { key: this.KEYS.REWRITE_AUTO_PUBLISH, value: "false", description: "Publish rewrites without human review", category: "rewrite" },
     { key: this.KEYS.REWRITE_BATCH_SIZE, value: "3", description: "Articles rewritten per scheduled run", category: "rewrite" },
     { key: this.KEYS.WP_INGEST_ENABLED, value: "true", description: "Ingest WordPress posts on their own schedule, independently of the crawler", category: "rewrite" },
+    { key: this.KEYS.WP_AUTO_PUBLISH_AS_IS, value: "true", description: "Publish ingested WordPress posts verbatim instead of holding them for review", category: "rewrite" },
   ];
 
   for (const def of defaults) {

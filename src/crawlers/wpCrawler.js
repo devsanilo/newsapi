@@ -13,10 +13,19 @@
  * post on request, so the rewrite pipeline gets real source text and the
  * scrape disappears from the path entirely.
  *
- * These rows are ingested UNPUBLISHED. The publisher's own text is never served
- * to readers; the row only goes live once a rewrite has been generated and
- * applied, at which point `content_type` becomes 'rewritten'. A row that never
- * rewrites successfully simply stays invisible.
+ * These rows are ingested PUBLISHED as-is by default: a publisher post is full
+ * text, so it can go live verbatim under its own page (`content_type`
+ * 'syndicated', `rewrite_status` 'skipped'). That is what `autoPublishAsIs`
+ * controls, and it defaults on so nothing waits in the decision queue.
+ *
+ * With the switch off, rows are ingested UNPUBLISHED instead and only go live
+ * once a rewrite has been generated and applied ('rewritten'), or an operator
+ * publishes them verbatim. A row that is never decided on simply stays
+ * invisible.
+ *
+ * The trade-off is real and one-way: the rewrite queue claims only
+ * `content_type='aggregated'` rows, so a post published on ingest can never be
+ * rewritten afterwards — its publisher text is already live.
  *
  * Rows are marked `ingest_type = 'wordpress'`, which is what makes them
  * eligible for the rewrite queue. RSS rows are `ingest_type = 'rss'`: they are
@@ -98,7 +107,10 @@ class WPCrawler {
    * @param {Object} [opts] - { perPage }
    * @returns {Promise<Array>} Normalised article objects ready to store
    */
-  async fetchFromSource(source, { perPage = DEFAULT_PER_PAGE } = {}) {
+  async fetchFromSource(
+    source,
+    { perPage = DEFAULT_PER_PAGE, autoPublishAsIs = true } = {},
+  ) {
     const wpApiUrl =
       source.wp_api_url ||
       `${String(source.url || "").replace(/\/+$/, "")}/wp-json/wp/v2`;
@@ -125,7 +137,11 @@ class WPCrawler {
     let tooShort = 0;
 
     for (const post of posts) {
-      const article = this._normalizePost(post, source, { categoryMap, mediaMap });
+      const article = this._normalizePost(post, source, {
+        categoryMap,
+        mediaMap,
+        autoPublishAsIs,
+      });
       if (!article) continue;
       if (article._words < MIN_CONTENT_WORDS) {
         tooShort += 1;
@@ -235,7 +251,11 @@ class WPCrawler {
   /**
    * Normalise one WordPress post into the article shape `storeArticles` wants.
    */
-  _normalizePost(post, source, { categoryMap = {}, mediaMap = {} } = {}) {
+  _normalizePost(
+    post,
+    source,
+    { categoryMap = {}, mediaMap = {}, autoPublishAsIs = true } = {},
+  ) {
     try {
       const title = cleanTitle(post?.title?.rendered || "");
       const link = post?.link?.trim();
@@ -277,11 +297,27 @@ class WPCrawler {
 
         // Provenance: this is what lets the rewrite queue claim the row.
         ingest_type: "wordpress",
-        // Live content is still the publisher's until a rewrite is applied.
-        content_type: "aggregated",
-        rewrite_status: "none",
-        // Held back until a rewrite exists, so publisher text is never served.
-        is_published: false,
+
+        // Published on arrival: the live text is the publisher's own verbatim,
+        // and 'skipped' records the decision so the rewrite queue — which takes
+        // only 'none'/'failed' — never picks it up.
+        ...(autoPublishAsIs
+          ? {
+              content_type: "syndicated",
+              rewrite_status: "skipped",
+              is_published: true,
+              rewrite_meta: {
+                published_as_is_at: new Date().toISOString(),
+                published_as_is_by: "ingest",
+              },
+            }
+          : {
+              // Held back until a rewrite exists or an operator publishes it
+              // verbatim, so publisher text is never served undecided.
+              content_type: "aggregated",
+              rewrite_status: "none",
+              is_published: false,
+            }),
 
         // Internal only — stripped before insert.
         _words: words,
